@@ -126,6 +126,7 @@ export async function handler(event) {
 
     const reply =
       aiData.reply ??
+      aiData.response ??
       aiData.message ??
       aiData.output ??
       null;
