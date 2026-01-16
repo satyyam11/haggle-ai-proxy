@@ -25,16 +25,36 @@ export async function handler(event) {
 
   try {
     console.log(
-  "Webhook secret present:",
-  Boolean(process.env.WEBHOOK_SECRET)
-);
+      "Webhook secret present:",
+      Boolean(process.env.WEBHOOK_SECRET)
+    );
 
-    // ✅ Defensive parsing
+    // ✅ Parse incoming body
     const incoming = event.body ? JSON.parse(event.body) : {};
-    console.log("Incoming from Shopify:", incoming);
+    console.log("Incoming from frontend:", incoming);
 
+    // ✅ NORMALIZE MESSAGE (THIS IS THE FIX)
+    const userMessage =
+      incoming.message ||
+      incoming.text ||
+      incoming.input ||
+      incoming.prompt ||
+      "";
+
+    // ❌ If still no message, stop here
+    if (!userMessage.trim()) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          reply: "No message received from frontend",
+        }),
+      };
+    }
+
+    // ✅ Payload AI EXPECTS
     const payload = {
-      message: incoming.message || "",
+      message: userMessage,
       threadId: incoming.threadId || null,
       type: "user_message",
     };
@@ -51,7 +71,6 @@ export async function handler(event) {
       }
     );
 
-    // ✅ Handle non-200 safely
     const rawText = await response.text();
     console.log("Raw AI response:", rawText);
 
