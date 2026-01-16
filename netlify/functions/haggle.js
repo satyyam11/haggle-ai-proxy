@@ -1,6 +1,20 @@
 export async function handler(event) {
   try {
-    const body = JSON.parse(event.body);
+    if (event.httpMethod !== "POST") {
+      return {
+        statusCode: 405,
+        body: "Method Not Allowed"
+      };
+    }
+
+    const incoming = JSON.parse(event.body);
+
+    // BuildMyPrompt expects THIS shape
+    const payload = {
+      message: incoming.message,
+      threadId: incoming.threadId || null,
+      type: "user_message"
+    };
 
     const response = await fetch(
       "https://connect.testmyprompt.com/webhook/696a92740b82d2902a88db02",
@@ -8,14 +22,20 @@ export async function handler(event) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Webhook-Secret":
-            "d7e36c27f9df5507aea77393dac4d36b14c5ab03e07b80b7fb606547ad59ed4d"
+          "X-Webhook-Secret": process.env.WEBHOOK_SECRET
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(payload)
       }
     );
 
     const data = await response.json();
+
+    // Normalize reply for frontend
+    const reply =
+      data.reply ||
+      data.message ||
+      data.output ||
+      "Let me think about that 🙂";
 
     return {
       statusCode: 200,
@@ -23,15 +43,19 @@ export async function handler(event) {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Headers": "Content-Type"
       },
-      body: JSON.stringify(data)
+      body: JSON.stringify({ reply })
     };
   } catch (err) {
+    console.error("HAGGLE ERROR:", err);
+
     return {
       statusCode: 500,
       headers: {
         "Access-Control-Allow-Origin": "*"
       },
-      body: JSON.stringify({ error: "Proxy error" })
+      body: JSON.stringify({
+        reply: "⚠️ Sorry, I’m having trouble right now."
+      })
     };
   }
 }
