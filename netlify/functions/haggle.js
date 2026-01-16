@@ -1,19 +1,42 @@
 export async function handler(event) {
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+
+  // ✅ Handle CORS preflight
+  if (event.httpMethod === "OPTIONS") {
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: "",
+    };
+  }
+
+  // ✅ Allow only POST
+  if (event.httpMethod !== "POST") {
+    return {
+      statusCode: 405,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: "Method Not Allowed" }),
+    };
+  }
+
   try {
-    if (event.httpMethod !== "POST") {
-      return {
-        statusCode: 405,
-        body: "Method Not Allowed"
-      };
-    }
+    console.log(
+  "Webhook secret present:",
+  Boolean(process.env.WEBHOOK_SECRET)
+);
 
-    const incoming = JSON.parse(event.body);
+    // ✅ Defensive parsing
+    const incoming = event.body ? JSON.parse(event.body) : {};
+    console.log("Incoming from Shopify:", incoming);
 
-    // BuildMyPrompt expects THIS shape
     const payload = {
-      message: incoming.message,
+      message: incoming.message || "",
       threadId: incoming.threadId || null,
-      type: "user_message"
+      type: "user_message",
     };
 
     const response = await fetch(
@@ -22,15 +45,23 @@ export async function handler(event) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Webhook-Secret": process.env.WEBHOOK_SECRET
+          "X-Webhook-Secret": process.env.WEBHOOK_SECRET,
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       }
     );
 
-    const data = await response.json();
+    // ✅ Handle non-200 safely
+    const rawText = await response.text();
+    console.log("Raw AI response:", rawText);
 
-    // Normalize reply for frontend
+    let data = {};
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      console.warn("AI returned non-JSON");
+    }
+
     const reply =
       data.reply ||
       data.message ||
@@ -39,23 +70,18 @@ export async function handler(event) {
 
     return {
       statusCode: 200,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type"
-      },
-      body: JSON.stringify({ reply })
+      headers: corsHeaders,
+      body: JSON.stringify({ reply }),
     };
   } catch (err) {
     console.error("HAGGLE ERROR:", err);
 
     return {
       statusCode: 500,
-      headers: {
-        "Access-Control-Allow-Origin": "*"
-      },
+      headers: corsHeaders,
       body: JSON.stringify({
-        reply: "⚠️ Sorry, I’m having trouble right now."
-      })
+        reply: "⚠️ Sorry, I’m having trouble right now.",
+      }),
     };
   }
 }
