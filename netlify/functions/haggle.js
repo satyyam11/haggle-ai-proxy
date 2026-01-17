@@ -87,40 +87,33 @@ export async function handler(event) {
       };
     }
 
-    const floorPrice = Math.round(basePrice * 0.8); // 20% max discount
+    const floorPrice = Math.round(basePrice * 0.8);
 
-    // ---------- AI MESSAGE (FINAL PRODUCTION PROMPT) ----------
+    // ---------- AI PROMPT ----------
     const aiMessage = `
 You are HAGGLE, a playful but professional price negotiator for an Indian e-commerce brand.
 
-You are negotiating for the following product (DO NOT CHANGE THESE DETAILS):
+You are negotiating for:
 - Product name: ${productName}
 - Current selling price: ₹${basePrice} INR
-- Maximum allowed discount: 20%
-- Absolute floor price: ₹${floorPrice} INR
+- Absolute floor price: ₹${floorPrice} INR (20% max discount)
 
-IMPORTANT RULES (NON-NEGOTIABLE):
-- Currency is INR only. Never use USD or $.
-- Never invent a different product or price.
-- Never offer or accept anything below ₹${floorPrice}.
-- If the user agrees to a price, STOP negotiating immediately.
-- Do NOT reintroduce yourself again.
+STRICT RULES:
+- Currency is INR only.
+- Never invent another product or price.
+- Never go below ₹${floorPrice}.
+- Do NOT greet again.
+- Stop negotiating once user agrees.
 
-NEGOTIATION STRATEGY:
-- Always ask for the user's offer first.
-- Never start by discounting yourself.
-- Counter offers must follow this order:
-  10% → 15% → 17% → 20% (floor)
-- Do NOT jump steps.
-- Prefer closing at the highest accepted price.
-- Always ask: “Should I lock this price for you?”
+DISCOUNT STEPS:
+10% → 15% → 17% → 20% (final)
 
 User message:
 "${userMessage}"
 
 Respond ONLY in valid JSON:
 {
-  "reply": "<what you say to the customer>",
+  "reply": "<message>",
   "agreed_price": <number or null>,
   "action": "NONE" | "ADD_TO_CART"
 }
@@ -155,39 +148,54 @@ Respond ONLY in valid JSON:
     console.log(aiText);
     console.log("====================================");
 
-let aiData = {};
-let cleanedText = aiText;
+    // ---------- ✅ CORRECT AI PARSING ----------
+    let aiData;
 
-// 🔥 Strip markdown code fences if AI wraps JSON
-cleanedText = cleanedText
-  .replace(/```json/gi, "")
-  .replace(/```/g, "")
-  .trim();
+    try {
+      // 1️⃣ Parse outer wrapper
+      const outer = JSON.parse(aiText);
 
-try {
-  aiData = JSON.parse(cleanedText);
-} catch (err) {
-  console.error("Failed to parse AI JSON:", cleanedText);
-  return {
-    statusCode: 502,
-    headers: corsHeaders,
-    body: JSON.stringify({
-      reply: "AI returned invalid response",
-    }),
-  };
-}
+      let inner = outer.response || outer.reply || outer.message;
 
+      if (!inner) {
+        throw new Error("Missing AI inner response");
+      }
 
+      // 2️⃣ Remove markdown
+      inner = inner
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
+
+      // 3️⃣ Parse inner JSON
+      aiData = JSON.parse(inner);
+
+    } catch (err) {
+      console.error("AI JSON parsing failed:", err);
+      console.error("RAW AI:", aiText);
+      return {
+        statusCode: 502,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          reply: "Sorry, please try again.",
+          agreed_price: null,
+          action: "NONE",
+        }),
+      };
+    }
+
+    // ---------- SUCCESS ----------
     return {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify({
-        reply: aiData.reply ?? "Sorry, please try again.",
+        reply: aiData.reply,
         agreed_price: aiData.agreed_price ?? null,
         action: aiData.action ?? "NONE",
         threadId: aiData.threadId ?? incoming.threadId ?? null,
       }),
     };
+
   } catch (err) {
     console.error("HAGGLE ERROR:", err);
     return {
