@@ -7,11 +7,7 @@ export async function handler(event) {
 
   // ---------- CORS ----------
   if (event.httpMethod === "OPTIONS") {
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: "",
-    };
+    return { statusCode: 200, headers: corsHeaders, body: "" };
   }
 
   if (event.httpMethod !== "POST") {
@@ -33,9 +29,8 @@ export async function handler(event) {
   }
 
   try {
-    // ---------- BODY PARSING (NETLIFY-SAFE) ----------
+    // ---------- BODY PARSING ----------
     let rawBody = "";
-
     if (typeof event.body === "string" && event.body.length > 0) {
       rawBody = event.isBase64Encoded
         ? Buffer.from(event.body, "base64").toString("utf-8")
@@ -43,7 +38,6 @@ export async function handler(event) {
     }
 
     if (!rawBody) {
-      console.warn("Empty request body received");
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -54,8 +48,7 @@ export async function handler(event) {
     let incoming;
     try {
       incoming = JSON.parse(rawBody);
-    } catch (err) {
-      console.error("JSON parse failed:", rawBody);
+    } catch {
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -63,17 +56,15 @@ export async function handler(event) {
       };
     }
 
-    // ---------- LOG FRONTEND PAYLOAD ----------
     console.log("========== INCOMING FRONTEND PAYLOAD ==========");
     console.log(JSON.stringify(incoming, null, 2));
-    console.log("========== END FRONTEND PAYLOAD ==========");
+    console.log("==============================================");
 
-    // ---------- MESSAGE NORMALIZATION ----------
+    // ---------- USER MESSAGE ----------
     const userMessage =
       incoming.message ??
       incoming.text ??
       incoming.input ??
-      incoming.prompt ??
       "";
 
     if (!userMessage || typeof userMessage !== "string") {
@@ -84,27 +75,70 @@ export async function handler(event) {
       };
     }
 
-    // ---------- AI PAYLOAD (PHASE-1 DEBUG VERSION) ----------
+    // ---------- PRODUCT & PRICE LOGIC ----------
+    const productName = incoming.product?.name ?? "this product";
+    const basePrice = Number(incoming.product?.price);
+
+    if (!basePrice || isNaN(basePrice)) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ reply: "Invalid product price" }),
+      };
+    }
+
+    const floorPrice = Math.round(basePrice * 0.8); // 20% max discount
+
+    // ---------- AI MESSAGE (FINAL PRODUCTION PROMPT) ----------
+    const aiMessage = `
+You are HAGGLE, a playful but professional price negotiator for an Indian e-commerce brand.
+
+You are negotiating for the following product (DO NOT CHANGE THESE DETAILS):
+- Product name: ${productName}
+- Current selling price: ₹${basePrice} INR
+- Maximum allowed discount: 20%
+- Absolute floor price: ₹${floorPrice} INR
+
+IMPORTANT RULES (NON-NEGOTIABLE):
+- Currency is INR only. Never use USD or $.
+- Never invent a different product or price.
+- Never offer or accept anything below ₹${floorPrice}.
+- If the user agrees to a price, STOP negotiating immediately.
+- Do NOT reintroduce yourself again.
+
+NEGOTIATION STRATEGY:
+- Always ask for the user's offer first.
+- Never start by discounting yourself.
+- Counter offers must follow this order:
+  10% → 15% → 17% → 20% (floor)
+- Do NOT jump steps.
+- Prefer closing at the highest accepted price.
+- Always ask: “Should I lock this price for you?”
+
+User message:
+"${userMessage}"
+
+Respond ONLY in valid JSON:
+{
+  "reply": "<what you say to the customer>",
+  "agreed_price": <number or null>,
+  "action": "NONE" | "ADD_TO_CART"
+}
+`.trim();
+
     const aiPayload = {
-      message: userMessage.trim(),
+      message: aiMessage,
       threadId: incoming.threadId ?? null,
       type: "user_message",
-
-      // 👇 PASS CONTEXT FOR VISIBILITY
-      context: {
-        product: incoming.product ?? null,
-        currency: "INR",
-      },
     };
 
-    // ---------- LOG AI REQUEST ----------
     console.log("========== AI REQUEST PAYLOAD ==========");
     console.log(JSON.stringify(aiPayload, null, 2));
-    console.log("========== END AI REQUEST PAYLOAD ==========");
+    console.log("========================================");
 
     // ---------- AI CALL ----------
     const aiResponse = await fetch(
-      "https://connect.testmyprompt.com/webhook/696a92740b82d2902a88db02",
+      "https://connect.testmyprompt.com/webhook/696b75a82abe5e63ed202cde",
       {
         method: "POST",
         headers: {
@@ -117,44 +151,33 @@ export async function handler(event) {
 
     const aiText = await aiResponse.text();
 
-    // ---------- LOG AI RESPONSE ----------
     console.log("========== RAW AI RESPONSE ==========");
     console.log(aiText);
-    console.log("========== END RAW AI RESPONSE ==========");
+    console.log("====================================");
 
     let aiData = {};
     try {
       aiData = JSON.parse(aiText);
     } catch {
-      console.warn("AI returned non-JSON");
-    }
-
-    const reply =
-      aiData.reply ??
-      aiData.response ??
-      aiData.message ??
-      aiData.output ??
-      null;
-
-    if (!reply) {
-      console.error("AI response missing reply field");
       return {
         statusCode: 502,
         headers: corsHeaders,
-        body: JSON.stringify({
-          reply: "AI did not return a valid response",
-        }),
+        body: JSON.stringify({ reply: "AI returned invalid response" }),
       };
     }
 
-    // ---------- SUCCESS ----------
     return {
       statusCode: 200,
       headers: corsHeaders,
-      body: JSON.stringify({ reply }),
+      body: JSON.stringify({
+        reply: aiData.reply ?? "Sorry, please try again.",
+        agreed_price: aiData.agreed_price ?? null,
+        action: aiData.action ?? "NONE",
+        threadId: aiData.threadId ?? incoming.threadId ?? null,
+      }),
     };
   } catch (err) {
-    console.error("HAGGLE FATAL ERROR:", err);
+    console.error("HAGGLE ERROR:", err);
     return {
       statusCode: 500,
       headers: corsHeaders,
