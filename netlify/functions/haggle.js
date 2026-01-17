@@ -37,16 +37,9 @@ export async function handler(event) {
     let rawBody = "";
 
     if (typeof event.body === "string" && event.body.length > 0) {
-      if (event.isBase64Encoded) {
-        try {
-          rawBody = Buffer.from(event.body, "base64").toString("utf-8");
-        } catch (e) {
-          console.error("Base64 decode failed", e);
-          throw new Error("Invalid base64 body");
-        }
-      } else {
-        rawBody = event.body;
-      }
+      rawBody = event.isBase64Encoded
+        ? Buffer.from(event.body, "base64").toString("utf-8")
+        : event.body;
     }
 
     if (!rawBody) {
@@ -54,27 +47,26 @@ export async function handler(event) {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({
-          reply: "No request body received",
-        }),
+        body: JSON.stringify({ reply: "No request body received" }),
       };
     }
 
     let incoming;
     try {
       incoming = JSON.parse(rawBody);
-    } catch (e) {
+    } catch (err) {
       console.error("JSON parse failed:", rawBody);
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({
-          reply: "Invalid JSON payload",
-        }),
+        body: JSON.stringify({ reply: "Invalid JSON payload" }),
       };
     }
 
-    console.log("Incoming payload:", incoming);
+    // ---------- LOG FRONTEND PAYLOAD ----------
+    console.log("========== INCOMING FRONTEND PAYLOAD ==========");
+    console.log(JSON.stringify(incoming, null, 2));
+    console.log("========== END FRONTEND PAYLOAD ==========");
 
     // ---------- MESSAGE NORMALIZATION ----------
     const userMessage =
@@ -84,22 +76,31 @@ export async function handler(event) {
       incoming.prompt ??
       "";
 
-    if (typeof userMessage !== "string" || !userMessage.trim()) {
+    if (!userMessage || typeof userMessage !== "string") {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({
-          reply: "Message field is required",
-        }),
+        body: JSON.stringify({ reply: "Message field is required" }),
       };
     }
 
-    // ---------- AI PAYLOAD ----------
+    // ---------- AI PAYLOAD (PHASE-1 DEBUG VERSION) ----------
     const aiPayload = {
       message: userMessage.trim(),
       threadId: incoming.threadId ?? null,
       type: "user_message",
+
+      // 👇 PASS CONTEXT FOR VISIBILITY
+      context: {
+        product: incoming.product ?? null,
+        currency: "INR",
+      },
     };
+
+    // ---------- LOG AI REQUEST ----------
+    console.log("========== AI REQUEST PAYLOAD ==========");
+    console.log(JSON.stringify(aiPayload, null, 2));
+    console.log("========== END AI REQUEST PAYLOAD ==========");
 
     // ---------- AI CALL ----------
     const aiResponse = await fetch(
@@ -115,7 +116,11 @@ export async function handler(event) {
     );
 
     const aiText = await aiResponse.text();
-    console.log("Raw AI response:", aiText);
+
+    // ---------- LOG AI RESPONSE ----------
+    console.log("========== RAW AI RESPONSE ==========");
+    console.log(aiText);
+    console.log("========== END RAW AI RESPONSE ==========");
 
     let aiData = {};
     try {
@@ -150,13 +155,10 @@ export async function handler(event) {
     };
   } catch (err) {
     console.error("HAGGLE FATAL ERROR:", err);
-
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({
-        reply: "Internal server error",
-      }),
+      body: JSON.stringify({ reply: "Internal server error" }),
     };
   }
 }
