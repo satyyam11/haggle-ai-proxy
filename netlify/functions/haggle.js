@@ -155,16 +155,28 @@ Respond ONLY in valid JSON:
     console.log(aiText);
     console.log("====================================");
 
-    let aiData = {};
-    try {
-      aiData = JSON.parse(aiText);
-    } catch {
-      return {
-        statusCode: 502,
-        headers: corsHeaders,
-        body: JSON.stringify({ reply: "AI returned invalid response" }),
-      };
-    }
+let aiData = {};
+let cleanedText = aiText;
+
+// 🔥 Strip markdown code fences if AI wraps JSON
+cleanedText = cleanedText
+  .replace(/```json/gi, "")
+  .replace(/```/g, "")
+  .trim();
+
+try {
+  aiData = JSON.parse(cleanedText);
+} catch (err) {
+  console.error("Failed to parse AI JSON:", cleanedText);
+  return {
+    statusCode: 502,
+    headers: corsHeaders,
+    body: JSON.stringify({
+      reply: "AI returned invalid response",
+    }),
+  };
+}
+
 
     return {
       statusCode: 200,
