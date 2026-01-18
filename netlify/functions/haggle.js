@@ -30,29 +30,17 @@ export async function handler(event) {
 
   try {
     // ---------- BODY PARSING ----------
-    let rawBody = "";
-    if (typeof event.body === "string" && event.body.length > 0) {
-      rawBody = event.isBase64Encoded
-        ? Buffer.from(event.body, "base64").toString("utf-8")
-        : event.body;
-    }
-
-    if (!rawBody) {
-      return {
-        statusCode: 400,
-        headers: corsHeaders,
-        body: JSON.stringify({ reply: "No request body received" }),
-      };
-    }
-
     let incoming;
     try {
-      incoming = JSON.parse(rawBody);
+      const raw = event.isBase64Encoded
+        ? Buffer.from(event.body, "base64").toString("utf-8")
+        : event.body;
+      incoming = JSON.parse(raw);
     } catch {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ reply: "Invalid JSON payload" }),
+        body: JSON.stringify({ reply: "Invalid request payload" }),
       };
     }
 
@@ -60,26 +48,20 @@ export async function handler(event) {
     console.log(JSON.stringify(incoming, null, 2));
     console.log("==============================================");
 
-    // ---------- USER MESSAGE ----------
-    const userMessage =
-      incoming.message ??
-      incoming.text ??
-      incoming.input ??
-      "";
+    const userMessage = incoming.message;
+    const product = incoming.product;
+    let threadId = incoming.threadId || null;
 
-    if (!userMessage || typeof userMessage !== "string") {
+    if (!userMessage || !product?.name || !product?.price) {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ reply: "Message field is required" }),
+        body: JSON.stringify({ reply: "Missing required fields" }),
       };
     }
 
-    // ---------- PRODUCT & PRICE LOGIC ----------
-    const productName = incoming.product?.name ?? "this product";
-    const basePrice = Number(incoming.product?.price);
-
-    if (!basePrice || isNaN(basePrice)) {
+    const basePrice = Number(product.price);
+    if (isNaN(basePrice)) {
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -88,40 +70,35 @@ export async function handler(event) {
     }
 
     const floorPrice = Math.round(basePrice * 0.8);
+    const safeFallbackPrice = Math.round(basePrice * 0.9);
 
-    // ---------- AI PROMPT ----------
-    const aiMessage = `
-You are HAGGLE, a playful but professional price negotiator for an Indian e-commerce brand.
+    // ---------- SHORT, FAST PROMPT (PHASE-1) ----------
+    const aiPrompt = `
+You are HAGGLE, an Indian e-commerce price negotiator.
 
-You are negotiating for:
-- Product name: ${productName}
-- Current selling price: ₹${basePrice} INR
-- Absolute floor price: ₹${floorPrice} INR (20% max discount)
+Product: ${product.name}
+Price: ₹${basePrice}
+Floor price: ₹${floorPrice}
 
-STRICT RULES:
-- Currency is INR only.
-- Never invent another product or price.
-- Never go below ₹${floorPrice}.
-- Do NOT greet again.
-- Stop negotiating once user agrees.
+Rules:
+- Currency INR only
+- Never go below floor
+- Do NOT greet
+- Respond ONLY in JSON
 
-DISCOUNT STEPS:
-10% → 15% → 17% → 20% (final)
+User says: "${userMessage}"
 
-User message:
-"${userMessage}"
-
-Respond ONLY in valid JSON:
+Return JSON only:
 {
   "reply": "<message>",
-  "agreed_price": <number or null>,
+  "agreed_price": <number|null>,
   "action": "NONE" | "ADD_TO_CART"
 }
 `.trim();
 
     const aiPayload = {
-      message: aiMessage,
-      threadId: incoming.threadId ?? null,
+      message: aiPrompt,
+      threadId,
       type: "user_message",
     };
 
@@ -148,51 +125,44 @@ Respond ONLY in valid JSON:
     console.log(aiText);
     console.log("====================================");
 
-    // ---------- ✅ CORRECT AI PARSING ----------
-    let aiData;
+    // ---------- SAFE PARSING + FALLBACK ----------
+    let reply = `I can offer ₹${safeFallbackPrice}. Would you like me to lock it in?`;
+    let agreed_price = null;
+    let action = "NONE";
 
     try {
-      // 1️⃣ Parse outer wrapper
       const outer = JSON.parse(aiText);
+      let inner = outer.response || outer.reply || "";
 
-      let inner = outer.response || outer.reply || outer.message;
-
-      if (!inner) {
-        throw new Error("Missing AI inner response");
-      }
-
-      // 2️⃣ Remove markdown
       inner = inner
         .replace(/```json/gi, "")
         .replace(/```/g, "")
         .trim();
 
-      // 3️⃣ Parse inner JSON
-      aiData = JSON.parse(inner);
+      const match = inner.match(/\{[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        reply = parsed.reply || reply;
+        agreed_price = parsed.agreed_price ?? null;
+        action = parsed.action || "NONE";
+      }
+
+      threadId = outer.threadId || threadId;
 
     } catch (err) {
-      console.error("AI JSON parsing failed:", err);
-      console.error("RAW AI:", aiText);
-      return {
-        statusCode: 502,
-        headers: corsHeaders,
-        body: JSON.stringify({
-          reply: "Sorry, please try again.",
-          agreed_price: null,
-          action: "NONE",
-        }),
-      };
+      console.error("AI parse failed — using fallback");
+      console.error(err);
     }
 
-    // ---------- SUCCESS ----------
+    // ---------- RESPONSE ----------
     return {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify({
-        reply: aiData.reply,
-        agreed_price: aiData.agreed_price ?? null,
-        action: aiData.action ?? "NONE",
-        threadId: aiData.threadId ?? incoming.threadId ?? null,
+        reply,
+        agreed_price,
+        action,
+        threadId,
       }),
     };
 
@@ -201,7 +171,9 @@ Respond ONLY in valid JSON:
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ reply: "Internal server error" }),
+      body: JSON.stringify({
+        reply: "Something went wrong. Let’s try again.",
+      }),
     };
   }
 }
