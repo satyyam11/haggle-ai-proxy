@@ -73,28 +73,31 @@ export async function handler(event) {
     const safeFallbackPrice = Math.round(basePrice * 0.9);
 
     // ---------- SHORT, FAST PROMPT (PHASE-1) ----------
-    const aiPrompt = `
-You are HAGGLE, an Indian e-commerce price negotiator.
+    const aiPrompt = const aiPrompt = `
+ROLE: HAGGLE (friendly Indian price negotiator)
 
-Product: ${product.name}
-Price: ₹${basePrice}
-Floor price: ₹${floorPrice}
+PRODUCT: ${product.name}
+PRICE: ₹${basePrice}
+FLOOR: ₹${floorPrice}
 
-Rules:
-- Currency INR only
-- Never go below floor
-- Do NOT greet
+RULES:
+- INR only
+- Never below floor
+- No greetings
+- Be playful but concise
+- Max 2 sentences
 - Respond ONLY in JSON
 
-User says: "${userMessage}"
+USER: "${userMessage}"
 
-Return JSON only:
+JSON:
 {
-  "reply": "<message>",
+  "reply": "<short playful reply>",
   "agreed_price": <number|null>,
   "action": "NONE" | "ADD_TO_CART"
 }
 `.trim();
+
 
     const aiPayload = {
       message: aiPrompt,
