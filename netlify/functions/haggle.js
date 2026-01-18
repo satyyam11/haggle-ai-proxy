@@ -1,3 +1,5 @@
+const fetch = require("node-fetch");
+
 exports.handler = async function (event) {
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -14,11 +16,12 @@ exports.handler = async function (event) {
     return {
       statusCode: 405,
       headers: corsHeaders,
-      body: JSON.stringify({ error: "Method Not Allowed" }),
+      body: JSON.stringify({ reply: "Method Not Allowed" }),
     };
   }
 
   if (!process.env.WEBHOOK_SECRET) {
+    console.error("❌ WEBHOOK_SECRET missing");
     return {
       statusCode: 500,
       headers: corsHeaders,
@@ -29,16 +32,20 @@ exports.handler = async function (event) {
   try {
     // ---------- BODY ----------
     const rawBody = event.isBase64Encoded
-      ? Buffer.from(event.body || "", "base64").toString("utf-8")
-      : event.body || "";
+      ? Buffer.from(event.body, "base64").toString("utf-8")
+      : event.body;
 
     const incoming = JSON.parse(rawBody);
 
-    const userMessage = String(incoming.message || "").trim();
-    const product = incoming.product || {};
-    const threadId = incoming.threadId || null;
+    console.log("========== INCOMING FRONTEND PAYLOAD ==========");
+    console.log(JSON.stringify(incoming, null, 2));
+    console.log("==============================================");
 
-    if (!userMessage || !product.price) {
+    const userMessage = incoming.message;
+    const product = incoming.product;
+    let threadId = incoming.threadId || null;
+
+    if (!userMessage || !product || !product.price) {
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -47,20 +54,12 @@ exports.handler = async function (event) {
     }
 
     const basePrice = Number(product.price);
-    if (isNaN(basePrice) || basePrice <= 0) {
-      return {
-        statusCode: 400,
-        headers: corsHeaders,
-        body: JSON.stringify({ reply: "Invalid price" }),
-      };
-    }
+    const floorPrice = Math.round(basePrice * 0.8); // 20% max
+    const fallbackPrice = Math.round(basePrice * 0.9); // 10%
 
-    const floorPrice = Math.round(basePrice * 0.8);
-    const fallbackPrice = Math.round(basePrice * 0.9);
-
-    // ---------- FAST PROMPT ----------
-    const aiPrompt =
-`You are HAGGLE, a playful Indian price negotiator.
+    // ---------- FAST + SAFE PROMPT ----------
+    const aiPrompt = `
+You are HAGGLE — a playful Indian price negotiator.
 
 Product: ${product.name}
 Price: ₹${basePrice}
@@ -70,13 +69,22 @@ Rules:
 - INR only
 - Never below floor
 - No greetings
-- Max 2 sentences
+- Max 2 short sentences
 - JSON only
 
 User: "${userMessage}"
 
-Respond:
-{"reply":"","agreed_price":null,"action":"NONE"}`;
+Reply ONLY as JSON:
+{
+  "reply": "",
+  "agreed_price": null,
+  "action": "NONE"
+}
+`.trim();
+
+    console.log("========== AI REQUEST PAYLOAD ==========");
+    console.log(JSON.stringify({ message: aiPrompt, threadId }, null, 2));
+    console.log("=======================================");
 
     // ---------- AI CALL ----------
     const aiRes = await fetch(
@@ -89,7 +97,7 @@ Respond:
         },
         body: JSON.stringify({
           message: aiPrompt,
-          threadId,
+          threadId: threadId,
           type: "user_message",
         }),
       }
@@ -97,28 +105,33 @@ Respond:
 
     const aiText = await aiRes.text();
 
-    // ---------- SAFE PARSING ----------
+    console.log("========== RAW AI RESPONSE ==========");
+    console.log(aiText);
+    console.log("====================================");
+
+    // ---------- PARSE AI ----------
     let reply = `I can offer ₹${fallbackPrice}. Want me to lock it in?`;
     let action = "NONE";
-    let nextThreadId = threadId;
 
     try {
       const outer = JSON.parse(aiText);
-      nextThreadId = outer.threadId || threadId;
-
       let inner = outer.response || "";
-      inner = inner.replace(/```json|```/gi, "").trim();
 
-      const jsonMatch = inner.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.reply) reply = parsed.reply;
-        if (parsed.action) action = parsed.action;
+      inner = inner.replace(/```json|```/g, "").trim();
+      const match = inner.match(/\{[\s\S]*\}/);
+
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        reply = parsed.reply || reply;
+        action = parsed.action || "NONE";
       }
-    } catch (_) {
-      // fallback already set
+
+      threadId = outer.threadId || threadId;
+    } catch (err) {
+      console.error("⚠️ AI PARSE FAILED, USING FALLBACK");
     }
 
+    // ---------- FINAL ----------
     return {
       statusCode: 200,
       headers: corsHeaders,
@@ -126,16 +139,17 @@ Respond:
         reply,
         agreed_price: null,
         action,
-        threadId: nextThreadId,
+        threadId,
       }),
     };
 
   } catch (err) {
+    console.error("🔥 HAGGLE FATAL ERROR:", err);
     return {
       statusCode: 500,
       headers: corsHeaders,
       body: JSON.stringify({
-        reply: "⚠️ I'm having trouble right now. Please try again.",
+        reply: "I’m having trouble right now. Please try again.",
       }),
     };
   }
