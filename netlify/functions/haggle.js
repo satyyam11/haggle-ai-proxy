@@ -1,16 +1,13 @@
-exports.handler = function (event) {
-  var corsHeaders = {
+exports.handler = async function (event) {
+  const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 
+  // ---------- CORS ----------
   if (event.httpMethod === "OPTIONS") {
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: "",
-    };
+    return { statusCode: 200, headers: corsHeaders, body: "" };
   }
 
   if (event.httpMethod !== "POST") {
@@ -30,17 +27,18 @@ exports.handler = function (event) {
   }
 
   try {
-    var rawBody = event.isBase64Encoded
-      ? Buffer.from(event.body, "base64").toString("utf-8")
-      : event.body;
+    // ---------- BODY ----------
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body || "", "base64").toString("utf-8")
+      : event.body || "";
 
-    var incoming = JSON.parse(rawBody);
+    const incoming = JSON.parse(rawBody);
 
-    var userMessage = incoming.message;
-    var product = incoming.product;
-    var threadId = incoming.threadId || null;
+    const userMessage = String(incoming.message || "").trim();
+    const product = incoming.product || {};
+    const threadId = incoming.threadId || null;
 
-    if (!userMessage || !product || !product.price) {
+    if (!userMessage || !product.price) {
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -48,88 +46,97 @@ exports.handler = function (event) {
       };
     }
 
-    var basePrice = Number(product.price);
-    var floorPrice = Math.round(basePrice * 0.8);
-    var fallbackPrice = Math.round(basePrice * 0.9);
+    const basePrice = Number(product.price);
+    if (isNaN(basePrice) || basePrice <= 0) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ reply: "Invalid price" }),
+      };
+    }
 
-    var aiPrompt =
-      "ROLE: HAGGLE (friendly Indian negotiator)\n" +
-      "PRODUCT: " + product.name + "\n" +
-      "PRICE: ₹" + basePrice + "\n" +
-      "FLOOR: ₹" + floorPrice + "\n\n" +
-      "RULES:\n" +
-      "- INR only\n" +
-      "- Never below floor\n" +
-      "- No greetings\n" +
-      "- Max 2 sentences\n" +
-      "- JSON only\n\n" +
-      'USER: "' + userMessage + '"\n\n' +
-      "JSON:\n" +
-      '{ "reply": "", "agreed_price": null, "action": "NONE" }';
+    const floorPrice = Math.round(basePrice * 0.8);
+    const fallbackPrice = Math.round(basePrice * 0.9);
 
-    return fetch("https://connect.testmyprompt.com/webhook/696b75a82abe5e63ed202cde", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Webhook-Secret": process.env.WEBHOOK_SECRET,
-      },
+    // ---------- FAST PROMPT ----------
+    const aiPrompt =
+`You are HAGGLE, a playful Indian price negotiator.
+
+Product: ${product.name}
+Price: ₹${basePrice}
+Floor: ₹${floorPrice}
+
+Rules:
+- INR only
+- Never below floor
+- No greetings
+- Max 2 sentences
+- JSON only
+
+User: "${userMessage}"
+
+Respond:
+{"reply":"","agreed_price":null,"action":"NONE"}`;
+
+    // ---------- AI CALL ----------
+    const aiRes = await fetch(
+      "https://connect.testmyprompt.com/webhook/696b75a82abe5e63ed202cde",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Webhook-Secret": process.env.WEBHOOK_SECRET,
+        },
+        body: JSON.stringify({
+          message: aiPrompt,
+          threadId,
+          type: "user_message",
+        }),
+      }
+    );
+
+    const aiText = await aiRes.text();
+
+    // ---------- SAFE PARSING ----------
+    let reply = `I can offer ₹${fallbackPrice}. Want me to lock it in?`;
+    let action = "NONE";
+    let nextThreadId = threadId;
+
+    try {
+      const outer = JSON.parse(aiText);
+      nextThreadId = outer.threadId || threadId;
+
+      let inner = outer.response || "";
+      inner = inner.replace(/```json|```/gi, "").trim();
+
+      const jsonMatch = inner.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.reply) reply = parsed.reply;
+        if (parsed.action) action = parsed.action;
+      }
+    } catch (_) {
+      // fallback already set
+    }
+
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
       body: JSON.stringify({
-        message: aiPrompt,
-        threadId: threadId,
-        type: "user_message",
+        reply,
+        agreed_price: null,
+        action,
+        threadId: nextThreadId,
       }),
-    })
-      .then(function (res) {
-        return res.text();
-      })
-      .then(function (aiText) {
-        var reply = "I can offer ₹" + fallbackPrice + ". Want me to lock it in?";
-        var action = "NONE";
-
-        try {
-          var outer = JSON.parse(aiText);
-          var inner = outer.response || "";
-          inner = inner.replace(/```json|```/g, "").trim();
-
-          var jsonMatch = inner.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            var parsed = JSON.parse(jsonMatch[0]);
-            reply = parsed.reply || reply;
-            action = parsed.action || "NONE";
-          }
-
-          threadId = outer.threadId || threadId;
-        } catch (e) {}
-
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            reply: reply,
-            agreed_price: null,
-            action: action,
-            threadId: threadId,
-          }),
-        };
-      })
-      .catch(function () {
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            reply: "I can offer ₹" + fallbackPrice + ". Want me to lock it in?",
-            agreed_price: null,
-            action: "NONE",
-            threadId: threadId,
-          }),
-        };
-      });
+    };
 
   } catch (err) {
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ reply: "Internal error" }),
+      body: JSON.stringify({
+        reply: "⚠️ I'm having trouble right now. Please try again.",
+      }),
     };
   }
 };
