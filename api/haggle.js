@@ -1,41 +1,26 @@
-const fetch = require("node-fetch");
+import fetch from "node-fetch";
 
-exports.handler = async function (event) {
-  const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-  };
-
+export default async function handler(req, res) {
   // ---------- CORS ----------
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: corsHeaders, body: "" };
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
   }
 
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: corsHeaders,
-      body: JSON.stringify({ reply: "Method Not Allowed" }),
-    };
+  if (req.method !== "POST") {
+    return res.status(405).json({ reply: "Method Not Allowed" });
   }
 
   if (!process.env.WEBHOOK_SECRET) {
     console.error("❌ WEBHOOK_SECRET missing");
-    return {
-      statusCode: 500,
-      headers: corsHeaders,
-      body: JSON.stringify({ reply: "Server misconfigured" }),
-    };
+    return res.status(500).json({ reply: "Server misconfigured" });
   }
 
   try {
-    // ---------- BODY ----------
-    const rawBody = event.isBase64Encoded
-      ? Buffer.from(event.body, "base64").toString("utf-8")
-      : event.body;
-
-    const incoming = JSON.parse(rawBody);
+    const incoming = req.body;
 
     console.log("========== INCOMING FRONTEND PAYLOAD ==========");
     console.log(JSON.stringify(incoming, null, 2));
@@ -46,18 +31,13 @@ exports.handler = async function (event) {
     let threadId = incoming.threadId || null;
 
     if (!userMessage || !product || !product.price) {
-      return {
-        statusCode: 400,
-        headers: corsHeaders,
-        body: JSON.stringify({ reply: "Invalid input" }),
-      };
+      return res.status(400).json({ reply: "Invalid input" });
     }
 
     const basePrice = Number(product.price);
-    const floorPrice = Math.round(basePrice * 0.8); // 20% max
-    const fallbackPrice = Math.round(basePrice * 0.9); // 10%
+    const floorPrice = Math.round(basePrice * 0.8);
+    const fallbackPrice = Math.round(basePrice * 0.9);
 
-    // ---------- FAST + SAFE PROMPT ----------
     const aiPrompt = `
 You are HAGGLE — a playful Indian price negotiator.
 
@@ -86,7 +66,6 @@ Reply ONLY as JSON:
     console.log(JSON.stringify({ message: aiPrompt, threadId }, null, 2));
     console.log("=======================================");
 
-    // ---------- AI CALL ----------
     const aiRes = await fetch(
       "https://connect.testmyprompt.com/webhook/696b75a82abe5e63ed202cde",
       {
@@ -97,7 +76,7 @@ Reply ONLY as JSON:
         },
         body: JSON.stringify({
           message: aiPrompt,
-          threadId: threadId,
+          threadId,
           type: "user_message",
         }),
       }
@@ -109,7 +88,6 @@ Reply ONLY as JSON:
     console.log(aiText);
     console.log("====================================");
 
-    // ---------- PARSE AI ----------
     let reply = `I can offer ₹${fallbackPrice}. Want me to lock it in?`;
     let action = "NONE";
 
@@ -127,30 +105,21 @@ Reply ONLY as JSON:
       }
 
       threadId = outer.threadId || threadId;
-    } catch (err) {
+    } catch {
       console.error("⚠️ AI PARSE FAILED, USING FALLBACK");
     }
 
-    // ---------- FINAL ----------
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        reply,
-        agreed_price: null,
-        action,
-        threadId,
-      }),
-    };
+    return res.status(200).json({
+      reply,
+      agreed_price: null,
+      action,
+      threadId,
+    });
 
   } catch (err) {
     console.error("🔥 HAGGLE FATAL ERROR:", err);
-    return {
-      statusCode: 500,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        reply: "I’m having trouble right now. Please try again.",
-      }),
-    };
+    return res.status(500).json({
+      reply: "I’m having trouble right now. Please try again.",
+    });
   }
-};
+}
