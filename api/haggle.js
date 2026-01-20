@@ -1,15 +1,16 @@
+function generateThreadId() {
+  return "th_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+}
+
 export default async function handler(req, res) {
   // ---------- CORS ----------
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
 
-  // ---------- OPTIONS ----------
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ---------- SAFE GET (IMPORTANT FIX) ----------
+  // ---------- SAFE GET ----------
   if (req.method === "GET") {
     return res.status(200).json({
       status: "ok",
@@ -17,11 +18,8 @@ export default async function handler(req, res) {
     });
   }
 
-  // ---------- POST ONLY BELOW ----------
   if (req.method !== "POST") {
-    return res.status(200).json({
-      reply: "Unsupported request"
-    });
+    return res.status(200).json({ reply: "Unsupported request" });
   }
 
   if (!process.env.WEBHOOK_SECRET) {
@@ -30,10 +28,15 @@ export default async function handler(req, res) {
   }
 
   try {
+    // ---------- INCOMING ----------
     const incoming = req.body;
+
+    console.log("📥 INCOMING FRONTEND PAYLOAD");
+    console.log(JSON.stringify(incoming, null, 2));
+
     const userMessage = incoming?.message;
     const product = incoming?.product;
-    let threadId = incoming?.threadId || null;
+    const threadId = incoming?.threadId || generateThreadId();
 
     if (!userMessage || !product?.price) {
       return res.status(200).json({ reply: "Invalid input" });
@@ -43,42 +46,54 @@ export default async function handler(req, res) {
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
 
-    // 🔒 LOCKED PRICE → NO AI CALL
+    // ---------- LOCK SHORT-CIRCUIT ----------
     if (incoming?.locked_price) {
+      console.log("🔒 LOCK CONFIRMED:", incoming.locked_price);
+
       return res.status(200).json({
-        reply: `Locked at ₹${incoming.locked_price}. You can add it to cart.`,
+        reply: `Done 😄 I’ve locked it at ₹${incoming.locked_price}. You can go ahead.`,
         action: "LOCK",
         agreed_price: incoming.locked_price,
         threadId
       });
     }
 
+    // ---------- PLAYFUL PROMPT ----------
     const aiPrompt = `
-You are HAGGLE, a smart price negotiator.
+You are HAGGLE — a friendly, playful Indian bargain assistant 😄
 
 Product: ${product.name}
-Price: ₹${basePrice}
-Minimum allowed: ₹${floorPrice}
+Listed price: ₹${basePrice}
+Minimum allowed price: ₹${floorPrice}
 
-Rules:
-- Respond ONLY in valid JSON
+Guidelines:
+- Sound natural, friendly, and slightly persuasive
+- 2–3 short lines max
+- Do NOT exceed ~120 words
+- Use ₹ symbol
+- Never go below minimum price
 - No markdown
-- No explanations
+- Reply ONLY in valid JSON
 
 JSON format:
 {
   "reply": "",
-  "action": "LOCK | COUNTER | REJECT",
+  "action": "COUNTER | LOCK | REJECT",
   "agreed_price": number | null
 }
 
-User: "${userMessage}"
+User says: "${userMessage}"
 `.trim();
 
+    console.log("🤖 AI PROMPT SENT");
+    console.log(aiPrompt);
+
+    // ---------- AI CALL ----------
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 7000); // slightly faster fail
 
     let aiText = "";
+
     try {
       const aiRes = await fetch(
         "https://connect.testmyprompt.com/webhook/696b75a82abe5e63ed202cde",
@@ -98,9 +113,11 @@ User: "${userMessage}"
       );
 
       aiText = await aiRes.text();
-    } catch {
+    } catch (err) {
+      console.error("⏱️ AI TIMEOUT / FAILURE");
+
       return res.status(200).json({
-        reply: `I can do ₹${fallbackPrice}. Want to lock it?`,
+        reply: `I really want to help 😊 How about ₹${fallbackPrice}?`,
         action: "COUNTER",
         agreed_price: null,
         threadId,
@@ -109,7 +126,11 @@ User: "${userMessage}"
       clearTimeout(timeout);
     }
 
-    let reply = `I can do ₹${fallbackPrice}. Want to lock it?`;
+    console.log("📤 RAW AI RESPONSE");
+    console.log(aiText);
+
+    // ---------- PARSE AI ----------
+    let reply = `I can do ₹${fallbackPrice} 😊`;
     let action = "COUNTER";
     let agreed_price = null;
 
@@ -129,12 +150,14 @@ User: "${userMessage}"
       agreed_price =
         typeof parsed.agreed_price === "number"
           ? parsed.agreed_price
-          : action === "LOCK"
-          ? Number(reply.match(/\d+/)?.[0]) || null
           : null;
 
-      threadId = outer.threadId || threadId;
-    } catch {}
+    } catch (err) {
+      console.error("⚠️ AI PARSE ERROR");
+    }
+
+    console.log("✅ FINAL RESPONSE TO FRONTEND");
+    console.log({ reply, action, agreed_price, threadId });
 
     return res.status(200).json({
       reply,
@@ -144,9 +167,9 @@ User: "${userMessage}"
     });
 
   } catch (err) {
-    console.error("🔥 HAGGLE ERROR:", err);
+    console.error("🔥 BACKEND FATAL ERROR", err);
     return res.status(200).json({
-      reply: "I’m having trouble right now.",
+      reply: "Oops 😅 give me a moment and try again.",
       action: "COUNTER",
       agreed_price: null,
     });
