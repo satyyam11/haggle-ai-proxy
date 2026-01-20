@@ -2,11 +2,26 @@ export default async function handler(req, res) {
   // ---------- CORS ----------
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
 
-  if (req.method === "OPTIONS") return res.status(200).end();
+  // ---------- OPTIONS ----------
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  // ---------- SAFE GET (IMPORTANT FIX) ----------
+  if (req.method === "GET") {
+    return res.status(200).json({
+      status: "ok",
+      message: "Haggle API is live"
+    });
+  }
+
+  // ---------- POST ONLY BELOW ----------
   if (req.method !== "POST") {
-    return res.status(405).json({ reply: "Method Not Allowed" });
+    return res.status(200).json({
+      reply: "Unsupported request"
+    });
   }
 
   if (!process.env.WEBHOOK_SECRET) {
@@ -15,21 +30,20 @@ export default async function handler(req, res) {
   }
 
   try {
-    // ---------- INPUT ----------
     const incoming = req.body;
     const userMessage = incoming?.message;
     const product = incoming?.product;
     let threadId = incoming?.threadId || null;
 
     if (!userMessage || !product?.price) {
-      return res.status(400).json({ reply: "Invalid input" });
+      return res.status(200).json({ reply: "Invalid input" });
     }
 
     const basePrice = Number(String(product.price).replace(/,/g, ""));
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
 
-    // 🔒 IF PRICE IS ALREADY LOCKED → DO NOT RE-NEGOTIATE
+    // 🔒 LOCKED PRICE → NO AI CALL
     if (incoming?.locked_price) {
       return res.status(200).json({
         reply: `Locked at ₹${incoming.locked_price}. You can add it to cart.`,
@@ -39,7 +53,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // ---------- PROMPT ----------
     const aiPrompt = `
 You are HAGGLE, a smart price negotiator.
 
@@ -51,9 +64,8 @@ Rules:
 - Respond ONLY in valid JSON
 - No markdown
 - No explanations
-- Keep reply natural
 
-JSON format (MANDATORY):
+JSON format:
 {
   "reply": "",
   "action": "LOCK | COUNTER | REJECT",
@@ -63,7 +75,6 @@ JSON format (MANDATORY):
 User: "${userMessage}"
 `.trim();
 
-    // ---------- AI CALL WITH TIMEOUT ----------
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
 
@@ -98,7 +109,6 @@ User: "${userMessage}"
       clearTimeout(timeout);
     }
 
-    // ---------- PARSE AI (FAIL-SAFE) ----------
     let reply = `I can do ₹${fallbackPrice}. Want to lock it?`;
     let action = "COUNTER";
     let agreed_price = null;
@@ -124,11 +134,8 @@ User: "${userMessage}"
           : null;
 
       threadId = outer.threadId || threadId;
-    } catch {
-      console.error("⚠️ AI parse failed");
-    }
+    } catch {}
 
-    // ---------- FINAL ----------
     return res.status(200).json({
       reply,
       action,
@@ -139,7 +146,7 @@ User: "${userMessage}"
   } catch (err) {
     console.error("🔥 HAGGLE ERROR:", err);
     return res.status(200).json({
-      reply: "I’m having trouble right now. Can we try again?",
+      reply: "I’m having trouble right now.",
       action: "COUNTER",
       agreed_price: null,
     });
