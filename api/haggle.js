@@ -10,11 +10,10 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ---------- SAFE GET ----------
   if (req.method === "GET") {
     return res.status(200).json({
       status: "ok",
-      message: "Haggle API is live"
+      message: "Haggle API is live",
     });
   }
 
@@ -28,7 +27,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // ---------- INCOMING ----------
     const incoming = req.body;
 
     console.log("📥 INCOMING FRONTEND PAYLOAD");
@@ -39,7 +37,12 @@ export default async function handler(req, res) {
     const threadId = incoming?.threadId || generateThreadId();
 
     if (!userMessage || !product?.price) {
-      return res.status(200).json({ reply: "Invalid input" });
+      return res.status(200).json({
+        reply: "Please send a valid message 😊",
+        action: "COUNTER",
+        agreed_price: null,
+        threadId,
+      });
     }
 
     const basePrice = Number(String(product.price).replace(/,/g, ""));
@@ -51,14 +54,13 @@ export default async function handler(req, res) {
       console.log("🔒 LOCK CONFIRMED:", incoming.locked_price);
 
       return res.status(200).json({
-        reply: `Done 😄 I’ve locked it at ₹${incoming.locked_price}. You can go ahead.`,
+        reply: `Done 😄 I’ve locked it at ₹${incoming.locked_price}.`,
         action: "LOCK",
         agreed_price: incoming.locked_price,
-        threadId
+        threadId,
       });
     }
 
-    // ---------- PLAYFUL PROMPT ----------
     const aiPrompt = `
 You are HAGGLE — a friendly, playful Indian bargain assistant 😄
 
@@ -67,9 +69,9 @@ Listed price: ₹${basePrice}
 Minimum allowed price: ₹${floorPrice}
 
 Guidelines:
-- Sound natural, friendly, and slightly persuasive
+- Sound friendly and human
 - 2–3 short lines max
-- Do NOT exceed ~120 words
+- Do not exceed 120 words
 - Use ₹ symbol
 - Never go below minimum price
 - No markdown
@@ -88,9 +90,9 @@ User says: "${userMessage}"
     console.log("🤖 AI PROMPT SENT");
     console.log(aiPrompt);
 
-    // ---------- AI CALL ----------
+    // ---------- AI CALL (15s timeout for demo safety) ----------
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 7000); // slightly faster fail
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
     let aiText = "";
 
@@ -114,10 +116,10 @@ User says: "${userMessage}"
 
       aiText = await aiRes.text();
     } catch (err) {
-      console.error("⏱️ AI TIMEOUT / FAILURE");
+      console.error("⏱️ AI TIMEOUT OR ERROR", err);
 
       return res.status(200).json({
-        reply: `I really want to help 😊 How about ₹${fallbackPrice}?`,
+        reply: `Hmm 😄 AI is a bit slow right now. How about ₹${fallbackPrice}?`,
         action: "COUNTER",
         agreed_price: null,
         threadId,
@@ -129,7 +131,6 @@ User says: "${userMessage}"
     console.log("📤 RAW AI RESPONSE");
     console.log(aiText);
 
-    // ---------- PARSE AI ----------
     let reply = `I can do ₹${fallbackPrice} 😊`;
     let action = "COUNTER";
     let agreed_price = null;
@@ -137,13 +138,7 @@ User says: "${userMessage}"
     try {
       const outer = JSON.parse(aiText);
       const raw = (outer.response || "").replace(/```json|```/g, "").trim();
-
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        parsed = { reply: raw };
-      }
+      const parsed = JSON.parse(raw);
 
       reply = parsed.reply || reply;
       action = parsed.action || action;
@@ -151,9 +146,8 @@ User says: "${userMessage}"
         typeof parsed.agreed_price === "number"
           ? parsed.agreed_price
           : null;
-
     } catch (err) {
-      console.error("⚠️ AI PARSE ERROR");
+      console.error("⚠️ AI PARSE FAILED");
     }
 
     console.log("✅ FINAL RESPONSE TO FRONTEND");
@@ -165,11 +159,10 @@ User says: "${userMessage}"
       agreed_price,
       threadId,
     });
-
   } catch (err) {
     console.error("🔥 BACKEND FATAL ERROR", err);
     return res.status(200).json({
-      reply: "Oops 😅 give me a moment and try again.",
+      reply: "I’m having trouble right now. Please try again.",
       action: "COUNTER",
       agreed_price: null,
     });
