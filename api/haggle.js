@@ -5,60 +5,33 @@ export default async function handler(req, res) {
     "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
   };
 
-  // ---------- CORS ----------
   if (req.method === "OPTIONS") {
     res.writeHead(200, corsHeaders);
-    res.end();
-    return;
+    return res.end();
   }
 
-  // ---------- HEALTH CHECK ----------
   if (req.method === "GET") {
     res.writeHead(200, corsHeaders);
-    res.end(JSON.stringify({ status: "ok", message: "Haggle API is live" }));
-    return;
+    return res.end(JSON.stringify({ status: "ok" }));
   }
 
   if (req.method !== "POST") {
     res.writeHead(405, corsHeaders);
-    res.end(JSON.stringify({ error: "Method Not Allowed" }));
-    return;
-  }
-
-  if (!process.env.WEBHOOK_SECRET) {
-    console.error("❌ WEBHOOK_SECRET missing");
-    res.writeHead(500, corsHeaders);
-    res.end(JSON.stringify({ reply: "Server misconfigured" }));
-    return;
+    return res.end(JSON.stringify({ error: "Method Not Allowed" }));
   }
 
   try {
-    const incoming = req.body || {};
+    const { message, product, threadId } = req.body || {};
 
-    console.log("📥 INCOMING FRONTEND PAYLOAD");
-    console.log(JSON.stringify(incoming, null, 2));
-
-    const userMessage = String(incoming.message || "").trim();
-    const product = incoming.product || {};
-    const threadId = incoming.threadId || null;
-
-    if (!userMessage || !product.price) {
+    if (!message || !product?.price || !product?.name) {
       res.writeHead(400, corsHeaders);
-      res.end(JSON.stringify({ reply: "Invalid input" }));
-      return;
+      return res.end(JSON.stringify({ reply: "Invalid input" }));
     }
 
     const basePrice = Number(product.price);
-    if (isNaN(basePrice) || basePrice <= 0) {
-      res.writeHead(400, corsHeaders);
-      res.end(JSON.stringify({ reply: "Invalid price" }));
-      return;
-    }
-
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
 
-    // ---------- SIMPLE PROMPT (WORKING STYLE) ----------
     const aiPrompt = `
 You are HAGGLE, a playful Indian price negotiator.
 
@@ -73,16 +46,12 @@ Rules:
 - Max 2 sentences
 - JSON only
 
-User: "${userMessage}"
+User: "${message}"
 
 Respond strictly as JSON:
 {"reply":"","agreed_price":null,"action":"NONE"}
 `.trim();
 
-    console.log("🤖 AI PROMPT SENT");
-    console.log(aiPrompt);
-
-    // ---------- AI CALL ----------
     const aiRes = await fetch(
       "https://connect.testmyprompt.com/webhook/696b75a82abe5e63ed202cde",
       {
@@ -101,48 +70,79 @@ Respond strictly as JSON:
 
     const aiText = await aiRes.text();
 
-    console.log("📤 RAW AI RESPONSE");
-    console.log(aiText);
-
-    // ---------- FORGIVING PARSING ----------
     let reply = `I can offer ₹${fallbackPrice}. Want me to lock it in?`;
     let action = "NONE";
+    let agreedPrice = null;
     let nextThreadId = threadId;
 
     try {
       const outer = JSON.parse(aiText);
       nextThreadId = outer.threadId || threadId;
 
-      let inner = outer.response || "";
-      inner = inner.replace(/```json|```/gi, "").trim();
+      let inner = (outer.response || "").replace(/```json|```/gi, "").trim();
+      const match = inner.match(/\{[\s\S]*?\}/);
 
-      const jsonMatch = inner.match(/\{[\s\S]*?\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.reply) reply = parsed.reply;
-        if (parsed.action) action = parsed.action;
-      } else {
-        console.warn("⚠️ No JSON object found in AI response");
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        reply = parsed.reply || reply;
+        action = parsed.action || "NONE";
+        agreedPrice = parsed.agreed_price || null;
       }
-    } catch {
-      console.error("⚠️ AI PARSE FAILED — fallback used");
-    }
+    } catch {}
 
-    console.log("✅ FINAL RESPONSE TO FRONTEND");
-    console.log({ reply, action, threadId: nextThreadId });
+    let checkoutUrl = null;
+
+    if (action === "LOCK" && agreedPrice) {
+      checkoutUrl = await createDraftOrder({
+        title: product.name,
+        price: agreedPrice,
+      });
+    }
 
     res.writeHead(200, corsHeaders);
     res.end(
       JSON.stringify({
         reply,
-        agreed_price: null,
         action,
+        agreed_price: agreedPrice,
+        checkout_url: checkoutUrl,
         threadId: nextThreadId,
       })
     );
   } catch (err) {
-    console.error("🔥 HAGGLE FATAL ERROR", err);
+    console.error(err);
     res.writeHead(500, corsHeaders);
-    res.end(JSON.stringify({ reply: "⚠️ Please try again." }));
+    res.end(JSON.stringify({ reply: "Something went wrong" }));
   }
+}
+
+async function createDraftOrder({ title, price }) {
+  const res = await fetch(
+    `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/draft_orders.json`,
+    {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        draft_order: {
+          line_items: [
+            {
+              title,
+              price: String(price),
+              quantity: 1,
+            },
+          ],
+          note: "AI negotiated price",
+        },
+      }),
+    }
+  );
+
+  const data = await res.json();
+
+  if (!res.ok) throw new Error("Draft order failed");
+
+  return data.draft_order.invoice_url;
 }
