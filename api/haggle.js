@@ -28,9 +28,11 @@ export default async function handler(req, res) {
     console.log("📥 INCOMING FRONTEND PAYLOAD");
     console.log(JSON.stringify({ message, product, threadId }, null, 2));
 
-    if (!message || !product?.price || !product?.name) {
+    if (!message || !product?.price || !product?.name || !product?.variantId) {
       res.writeHead(400, corsHeaders);
-      return res.end(JSON.stringify({ reply: "Invalid input" }));
+      return res.end(
+        JSON.stringify({ reply: "Invalid input (missing product info)" })
+      );
     }
 
     const basePrice = Number(product.price);
@@ -116,7 +118,7 @@ Respond strictly as JSON:
       console.warn("⚠️ AI PARSE FAILED, USING FALLBACK");
     }
 
-    /* ---------------- NORMALIZE AI ACTION (CRITICAL FIX) ---------------- */
+    /* ---------------- NORMALIZE AI ACTION ---------------- */
     if (action !== "LOCK" && agreedPrice) {
       console.warn("⚠️ NORMALIZING AI ACTION TO LOCK");
       action = "LOCK";
@@ -132,8 +134,11 @@ Respond strictly as JSON:
       console.log("🧾 CREATING DRAFT ORDER");
 
       checkoutUrl = await createDraftOrder({
-        title: product.name,
-        price: agreedPrice,
+        shop: process.env.SHOPIFY_SHOP,
+        accessToken: process.env.SHOPIFY_OAUTH_TOKEN, // TEMP: move to DB later
+        variantId: product.variantId,
+        originalPrice: basePrice,
+        agreedPrice,
       });
     }
 
@@ -164,25 +169,42 @@ Respond strictly as JSON:
 }
 
 /* ---------------- SHOPIFY DRAFT ORDER ---------------- */
-async function createDraftOrder({ title, price }) {
+async function createDraftOrder({
+  shop,
+  accessToken,
+  variantId,
+  originalPrice,
+  agreedPrice,
+}) {
+  const discount = originalPrice - agreedPrice;
+
+  console.log("🧮 DRAFT ORDER PRICE CALCULATION");
+  console.log({ originalPrice, agreedPrice, discount });
+
   const res = await fetch(
-    `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/draft_orders.json`,
+    `https://${shop}/admin/api/2024-01/draft_orders.json`,
     {
       method: "POST",
       headers: {
-        "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+        "X-Shopify-Access-Token": accessToken,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         draft_order: {
           line_items: [
             {
-              title,
-              price: String(price),
+              variant_id: variantId,
               quantity: 1,
             },
           ],
+          applied_discount: {
+            description: "AI negotiated discount",
+            value: discount,
+            value_type: "fixed_amount",
+            amount: discount,
+          },
           note: "AI negotiated price",
+          tags: ["ai-chatbot", "negotiated"],
         },
       }),
     }
