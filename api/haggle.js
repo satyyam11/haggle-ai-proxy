@@ -24,6 +24,41 @@ export default async function handler(req, res) {
 
   try {
     const { message, product, threadId } = req.body || {};
+        // 🧪 FORCE MODE — bypass AI and directly generate draft checkout
+    if (req.query.force === "1") {
+      console.log("🧪 FORCE MODE ENABLED — SKIPPING AI");
+
+      if (!product?.variantId || !product?.price || !product?.name) {
+        res.writeHead(400, corsHeaders);
+        return res.end(
+          JSON.stringify({ error: "Missing product info for force mode" })
+        );
+      }
+
+      const basePrice = Number(product.price);
+      const agreedPrice = basePrice - 35; // 👈 hardcoded test discount
+
+      const checkoutUrl = await createDraftOrder({
+        shop: process.env.SHOPIFY_SHOP,
+        accessToken: process.env.SHOPIFY_OAUTH_TOKEN,
+        variantId: product.variantId,
+        originalPrice: basePrice,
+        agreedPrice,
+      });
+
+      console.log("🧪 FORCE MODE CHECKOUT URL:", checkoutUrl);
+
+      res.writeHead(200, corsHeaders);
+      return res.end(
+        JSON.stringify({
+          reply: "FORCE MODE: Draft checkout generated",
+          action: "LOCK",
+          agreed_price: agreedPrice,
+          checkout_url: checkoutUrl,
+          threadId: "force-test",
+        })
+      );
+    }
 
     console.log("📥 INCOMING FRONTEND PAYLOAD");
     console.log(JSON.stringify({ message, product, threadId }, null, 2));
