@@ -5,13 +5,13 @@ export default async function handler(req, res) {
     "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
   };
 
-  /* ---------------- CORS ---------------- */
+  /* -------- CORS -------- */
   if (req.method === "OPTIONS") {
     res.writeHead(200, corsHeaders);
     return res.end();
   }
 
-  /* ---------------- HEALTH ---------------- */
+  /* -------- HEALTH -------- */
   if (req.method === "GET") {
     res.writeHead(200, corsHeaders);
     return res.end(JSON.stringify({ status: "ok", message: "Haggle API live" }));
@@ -28,11 +28,10 @@ export default async function handler(req, res) {
     console.log("📥 INCOMING FRONTEND PAYLOAD");
     console.log(JSON.stringify({ message, product, threadId }, null, 2));
 
-    if (!message || !product?.price || !product?.name || !product?.variantId) {
+    // ✅ FIXED: variantId NOT required for chat
+    if (!message || !product?.price || !product?.name) {
       res.writeHead(400, corsHeaders);
-      return res.end(
-        JSON.stringify({ reply: "Invalid input (missing product info)" })
-      );
+      return res.end(JSON.stringify({ reply: "Invalid input (missing product info)" }));
     }
 
     const basePrice = Number(product.price);
@@ -44,7 +43,7 @@ export default async function handler(req, res) {
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
 
-    /* ---------------- AI PROMPT ---------------- */
+    /* -------- AI PROMPT -------- */
     const aiPrompt = `
 You are HAGGLE, a playful Indian price negotiator.
 
@@ -59,8 +58,6 @@ Rules:
 - Max 2 sentences
 - JSON only
 - action MUST be exactly one of: "NONE" or "LOCK"
-- NEVER invent other actions
-- If the user agrees to lock the price, action MUST be "LOCK"
 
 User: "${message}"
 
@@ -71,7 +68,7 @@ Respond strictly as JSON:
     console.log("🤖 AI PROMPT SENT");
     console.log(aiPrompt);
 
-    /* ---------------- AI CALL ---------------- */
+    /* -------- AI CALL -------- */
     const aiRes = await fetch(
       "https://connect.testmyprompt.com/webhook/696b75a82abe5e63ed202cde",
       {
@@ -93,7 +90,7 @@ Respond strictly as JSON:
     console.log("📤 RAW AI RESPONSE");
     console.log(aiText);
 
-    /* ---------------- PARSE AI ---------------- */
+    /* -------- PARSE AI -------- */
     let reply = `I can offer ₹${fallbackPrice}. Want me to lock it in?`;
     let action = "NONE";
     let agreedPrice = null;
@@ -103,53 +100,39 @@ Respond strictly as JSON:
       const outer = JSON.parse(aiText);
       nextThreadId = outer.threadId || threadId;
 
-      let inner = (outer.response || "")
-        .replace(/```json|```/gi, "")
-        .trim();
-
+      let inner = (outer.response || "").replace(/```json|```/gi, "").trim();
       const match = inner.match(/\{[\s\S]*?\}/);
+
       if (match) {
         const parsed = JSON.parse(match[0]);
         reply = parsed.reply || reply;
         action = parsed.action || "NONE";
         agreedPrice = parsed.agreed_price || null;
       }
-    } catch (e) {
-      console.warn("⚠️ AI PARSE FAILED, USING FALLBACK");
-    }
-
-    /* ---------------- NORMALIZE AI ACTION ---------------- */
-    if (action !== "LOCK" && agreedPrice) {
-      console.warn("⚠️ NORMALIZING AI ACTION TO LOCK");
-      action = "LOCK";
+    } catch {
+      console.warn("⚠️ AI parse failed, using fallback");
     }
 
     console.log("🧠 PARSED AI RESULT");
     console.log({ reply, action, agreedPrice, nextThreadId });
 
-    /* ---------------- DRAFT ORDER ---------------- */
+    /* -------- DRAFT ORDER -------- */
     let checkoutUrl = null;
 
-    if (action === "LOCK" && agreedPrice) {
+    if (action === "LOCK" && agreedPrice && product.variantId) {
       console.log("🧾 CREATING DRAFT ORDER");
 
       checkoutUrl = await createDraftOrder({
         shop: process.env.SHOPIFY_SHOP,
-        accessToken: process.env.SHOPIFY_OAUTH_TOKEN, // TEMP: move to DB later
+        accessToken: process.env.SHOPIFY_OAUTH_TOKEN,
         variantId: product.variantId,
         originalPrice: basePrice,
         agreedPrice,
       });
     }
 
-    console.log("✅ FINAL RESPONSE TO FRONTEND");
-    console.log({
-      reply,
-      action,
-      agreed_price: agreedPrice,
-      checkout_url: checkoutUrl,
-      threadId: nextThreadId,
-    });
+    console.log("✅ FINAL RESPONSE");
+    console.log({ reply, action, agreedPrice, checkoutUrl, nextThreadId });
 
     res.writeHead(200, corsHeaders);
     res.end(
@@ -168,7 +151,7 @@ Respond strictly as JSON:
   }
 }
 
-/* ---------------- SHOPIFY DRAFT ORDER ---------------- */
+/* -------- SHOPIFY DRAFT ORDER -------- */
 async function createDraftOrder({
   shop,
   accessToken,
@@ -178,7 +161,7 @@ async function createDraftOrder({
 }) {
   const discount = originalPrice - agreedPrice;
 
-  console.log("🧮 DRAFT ORDER PRICE CALCULATION");
+  console.log("🧮 DRAFT ORDER CALC");
   console.log({ originalPrice, agreedPrice, discount });
 
   const res = await fetch(
@@ -198,13 +181,11 @@ async function createDraftOrder({
             },
           ],
           applied_discount: {
-            description: "AI negotiated discount",
+            description: "AI negotiated price",
             value: discount,
             value_type: "fixed_amount",
-            amount: discount,
           },
-          note: "AI negotiated price",
-          tags: ["ai-chatbot", "negotiated"],
+          note: "AI negotiated via chat",
         },
       }),
     }
@@ -212,12 +193,10 @@ async function createDraftOrder({
 
   const data = await res.json();
 
-  console.log("🧾 SHOPIFY DRAFT ORDER RESPONSE");
+  console.log("🧾 SHOPIFY RESPONSE");
   console.log(JSON.stringify(data, null, 2));
 
-  if (!res.ok) {
-    throw new Error("Draft order failed");
-  }
+  if (!res.ok) throw new Error("Draft order failed");
 
   return data.draft_order.invoice_url;
 }
