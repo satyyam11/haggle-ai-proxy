@@ -23,23 +23,41 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { message, product, threadId } = req.body || {};
+    const { message, variantId, threadId } = req.body || {};
 
-    console.log("📥 INCOMING PAYLOAD", { message, product, threadId });
+    console.log("📥 INCOMING PAYLOAD", { message, variantId, threadId });
 
-    if (!message || !product?.name || !product?.price) {
+    if (!message || !variantId) {
       return res.end(JSON.stringify({ reply: "Invalid input" }));
     }
 
-    const basePrice = Number(product.price);
+    /* ---------------------------------
+       🔒 FETCH VARIANT FROM SHOPIFY
+       (Single source of truth)
+    ---------------------------------- */
+    const variant = await fetchVariantFromShopify(variantId);
+
+    if (!variant) {
+      throw new Error("Variant not found in Shopify");
+    }
+
+    console.log("🔍 VARIANT VERIFIED", {
+      variantId: variant.id,
+      product: variant.product_title,
+      price: variant.price,
+    });
+
+    const basePrice = Number(variant.price);
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
 
-    /* ---------- AI PROMPT ---------- */
+    /* ---------------------------------
+       🤖 AI PROMPT
+    ---------------------------------- */
     const aiPrompt = `
 You are HAGGLE, a price negotiator.
 
-Product: ${product.name}
+Product: ${variant.product_title}
 Price: ₹${basePrice}
 Floor: ₹${floorPrice}
 
@@ -74,7 +92,9 @@ User: "${message}"
     const aiText = await aiRes.text();
     console.log("🤖 RAW AI:", aiText);
 
-    /* ---------- PARSE AI ---------- */
+    /* ---------------------------------
+       🧠 PARSE AI SAFELY
+    ---------------------------------- */
     let reply = `I can offer ₹${fallbackPrice}. Want me to lock it in?`;
     let finalPrice = fallbackPrice;
     let intent = "NEGOTIATE";
@@ -90,32 +110,39 @@ User: "${message}"
 
       if (inner) {
         const parsed = JSON.parse(inner);
-        reply = parsed.reply || reply;
-        finalPrice = parsed.final_price || finalPrice;
-        intent = parsed.intent || intent;
+
+        if (
+          typeof parsed.final_price === "number" &&
+          parsed.final_price >= floorPrice
+        ) {
+          finalPrice = parsed.final_price;
+        }
+
+        if (parsed.reply) reply = parsed.reply;
+        if (parsed.intent) intent = parsed.intent;
       }
     } catch (err) {
       console.warn("⚠️ AI parse failed, fallback used", err);
     }
 
-    /* ---------- BACKEND ACCEPTANCE SAFETY ---------- */
+    /* ---------------------------------
+       ✅ USER ACCEPTANCE SAFETY
+    ---------------------------------- */
     const userAgreed = /(ok|okay|deal|lock|yes|fine)/i.test(message);
     if (userAgreed) intent = "LOCK_PRICE";
 
     console.log("🧠 DECISION", { intent, finalPrice });
 
-    /* ---------- CREATE DRAFT ORDER ---------- */
+    /* ---------------------------------
+       🧾 CREATE DRAFT ORDER
+    ---------------------------------- */
     let checkoutUrl = null;
 
-    if (
-      intent === "LOCK_PRICE" &&
-      product.variantId &&
-      finalPrice >= floorPrice
-    ) {
+    if (intent === "LOCK_PRICE" && finalPrice >= floorPrice) {
       console.log("🧾 CREATING DRAFT ORDER");
 
       checkoutUrl = await createDraftOrder({
-        variantId: product.variantId,
+        variantId: variant.id,
         originalPrice: basePrice,
         agreedPrice: finalPrice,
       });
@@ -137,7 +164,30 @@ User: "${message}"
   }
 }
 
-/* ---------- SHOPIFY DRAFT ORDER ---------- */
+/* ======================================================
+   🔒 SHOPIFY HELPERS
+====================================================== */
+
+async function fetchVariantFromShopify(variantId) {
+  const res = await fetch(
+    `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/variants/${variantId}.json`,
+    {
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_OAUTH_TOKEN,
+      },
+    }
+  );
+
+  const data = await res.json();
+
+  if (!res.ok || !data?.variant) {
+    console.error("❌ VARIANT FETCH FAILED", data);
+    return null;
+  }
+
+  return data.variant;
+}
+
 async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
   console.log("🛒 DRAFT ORDER INPUT", {
     variantId,
@@ -159,7 +209,7 @@ async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
             {
               variant_id: variantId,
               quantity: 1,
-              price: agreedPrice, // ✅ price override (correct way)
+              price: agreedPrice, // ✅ price override
             },
           ],
           note: `AI negotiated from ₹${originalPrice} to ₹${agreedPrice}`,
@@ -175,16 +225,20 @@ async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
     JSON.stringify(data, null, 2)
   );
 
-  if (!res.ok || !data?.draft_order) {
+  const draftOrder =
+    data?.draft_order ||
+    (Array.isArray(data?.draft_orders) ? data.draft_orders[0] : null);
+
+  if (!res.ok || !draftOrder) {
     console.error("❌ SHOPIFY ERROR RESPONSE", data);
     throw new Error("Draft order creation failed");
   }
 
-  if (!data.draft_order.invoice_url) {
+  if (!draftOrder.invoice_url) {
     throw new Error("Invoice URL missing in Shopify response");
   }
 
-  console.log("✅ INVOICE URL:", data.draft_order.invoice_url);
+  console.log("✅ INVOICE URL:", draftOrder.invoice_url);
 
-  return data.draft_order.invoice_url;
+  return draftOrder.invoice_url;
 }
