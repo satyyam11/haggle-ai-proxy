@@ -20,15 +20,34 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ error: "Method Not Allowed" }));
   }
 
-  try {
-    const { message, variantId, price, threadId } = req.body || {};
+  /* -------------------------------------------------
+     🔒 BODY SAFETY (MOST IMPORTANT FIX)
+  -------------------------------------------------- */
+  let body = req.body;
 
-    console.log("📥 INCOMING PAYLOAD", { message, variantId, price, threadId });
-
-    if (!message || !variantId || !price) {
-      return res.end(JSON.stringify({ reply: "Invalid input" }));
+  if (!body || typeof body === "string") {
+    try {
+      body = JSON.parse(req.body || "{}");
+    } catch {
+      body = {};
     }
+  }
 
+  const { message, variantId, price, threadId } = body;
+
+  console.log("📥 INCOMING PAYLOAD", { message, variantId, price, threadId });
+
+  if (!message || !variantId || !price) {
+    console.error("❌ INVALID REQUEST BODY", body);
+    res.writeHead(400, corsHeaders);
+    return res.end(
+      JSON.stringify({
+        reply: "Something went wrong. Please refresh and try again.",
+      })
+    );
+  }
+
+  try {
     const basePrice = Number(price);
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
@@ -130,7 +149,7 @@ User: "${message}"
 
 /* ---------------- SHOPIFY DRAFT ORDER ---------------- */
 async function createDraftOrder({ variantId, agreedPrice }) {
-  const res = await fetch(
+  const shopifyRes = await fetch(
     `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/draft_orders.json`,
     {
       method: "POST",
@@ -153,7 +172,19 @@ async function createDraftOrder({ variantId, agreedPrice }) {
     }
   );
 
-  const data = await res.json();
+  /* -------------------------------------------------
+     🔒 SHOPIFY RESPONSE SAFETY
+  -------------------------------------------------- */
+  const text = await shopifyRes.text();
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.error("❌ SHOPIFY NON-JSON RESPONSE", text);
+    throw new Error("Shopify error");
+  }
+
   console.log("🧾 SHOPIFY DRAFT RESPONSE", JSON.stringify(data, null, 2));
 
   const draftOrder =
