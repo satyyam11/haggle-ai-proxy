@@ -20,11 +20,7 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ error: "Method Not Allowed" }));
   }
 
-  /* -------------------------------------------------
-     🔒 BODY SAFETY (MOST IMPORTANT FIX)
-  -------------------------------------------------- */
   let body = req.body;
-
   if (!body || typeof body === "string") {
     try {
       body = JSON.parse(req.body || "{}");
@@ -38,13 +34,8 @@ export default async function handler(req, res) {
   console.log("📥 INCOMING PAYLOAD", { message, variantId, price, threadId });
 
   if (!message || !variantId || !price) {
-    console.error("❌ INVALID REQUEST BODY", body);
     res.writeHead(400, corsHeaders);
-    return res.end(
-      JSON.stringify({
-        reply: "Something went wrong. Please refresh and try again.",
-      })
-    );
+    return res.end(JSON.stringify({ reply: "Invalid input" }));
   }
 
   try {
@@ -52,7 +43,6 @@ export default async function handler(req, res) {
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
 
-    /* ---------------- AI PROMPT ---------------- */
     const aiPrompt = `
 You are HAGGLE, a price negotiator.
 
@@ -98,33 +88,24 @@ User: "${message}"
     try {
       const outer = JSON.parse(aiText);
       nextThreadId = outer.threadId || threadId;
-
       const inner = (outer.response || "")
         .replace(/```json|```/gi, "")
         .match(/\{[\s\S]*?\}/)?.[0];
-
       if (inner) {
         const parsed = JSON.parse(inner);
         if (parsed.reply) reply = parsed.reply;
-        if (typeof parsed.final_price === "number")
-          finalPrice = parsed.final_price;
+        if (parsed.final_price) finalPrice = parsed.final_price;
         if (parsed.intent) intent = parsed.intent;
       }
-    } catch {
-      console.warn("⚠️ AI parse failed");
-    }
+    } catch {}
 
     if (/(ok|okay|deal|lock|yes|fine)/i.test(message)) {
       intent = "LOCK_PRICE";
     }
 
-    console.log("🧠 DECISION", { intent, finalPrice });
-
     let checkoutUrl = null;
 
     if (intent === "LOCK_PRICE" && finalPrice >= floorPrice) {
-      console.log("🧾 CREATING DRAFT ORDER");
-
       checkoutUrl = await createDraftOrder({
         variantId,
         agreedPrice: finalPrice,
@@ -147,7 +128,6 @@ User: "${message}"
   }
 }
 
-/* ---------------- SHOPIFY DRAFT ORDER ---------------- */
 async function createDraftOrder({ variantId, agreedPrice }) {
   const shopifyRes = await fetch(
     `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/draft_orders.json`,
@@ -172,16 +152,11 @@ async function createDraftOrder({ variantId, agreedPrice }) {
     }
   );
 
-  /* -------------------------------------------------
-     🔒 SHOPIFY RESPONSE SAFETY
-  -------------------------------------------------- */
   const text = await shopifyRes.text();
-  let data;
-
+  let data = {};
   try {
     data = JSON.parse(text);
   } catch {
-    console.error("❌ SHOPIFY NON-JSON RESPONSE", text);
     throw new Error("Shopify error");
   }
 
@@ -191,22 +166,8 @@ async function createDraftOrder({ variantId, agreedPrice }) {
     data?.draft_order ||
     (Array.isArray(data?.draft_orders) ? data.draft_orders[0] : null);
 
-  if (!draftOrder) {
-    throw new Error("Draft order creation failed");
-  }
-
-  const createdVariantId = draftOrder.line_items?.[0]?.variant_id;
-
-  if (Number(createdVariantId) !== Number(variantId)) {
-    console.error("🚨 VARIANT MISMATCH", {
-      expected: variantId,
-      got: createdVariantId,
-    });
-    throw new Error("Variant mismatch — aborting checkout");
-  }
-
-  if (!draftOrder.invoice_url) {
-    throw new Error("Missing invoice_url");
+  if (!draftOrder || !draftOrder.invoice_url) {
+    throw new Error("Draft order failed");
   }
 
   console.log("✅ INVOICE URL", draftOrder.invoice_url);
