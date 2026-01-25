@@ -20,6 +20,9 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ error: "Method Not Allowed" }));
   }
 
+  /* -------------------------------------------------
+     🔒 BODY SAFETY (Vercel-safe)
+  -------------------------------------------------- */
   let body = req.body;
   if (!body || typeof body === "string") {
     try {
@@ -43,21 +46,26 @@ export default async function handler(req, res) {
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
 
+    /* -------------------------------------------------
+       🤖 AI PROMPT (STRICT SCHEMA)
+    -------------------------------------------------- */
     const aiPrompt = `
 You are HAGGLE, a price negotiator.
 
 Price: ₹${basePrice}
 Floor: ₹${floorPrice}
 
-Rules:
-- Reply in JSON only
-- Max 2 sentences
-- INR only
-- Never below floor
+IMPORTANT RULES (MANDATORY):
+- You MUST return VALID JSON only
+- You MUST include ALL keys
+- You MUST NOT invent new keys
+- You MUST NOT use keys like action, agreed_price, add_to_cart
+- You MUST NOT mention cart or checkout
+- If unsure, still return the schema
 
-Return exactly:
+Return EXACTLY this JSON schema:
 {
-  "reply": "",
+  "reply": string,
   "final_price": number,
   "intent": "NEGOTIATE" | "LOCK_PRICE"
 }
@@ -80,6 +88,9 @@ User: "${message}"
     const aiText = await aiRes.text();
     console.log("🤖 RAW AI:", aiText);
 
+    /* -------------------------------------------------
+       🧠 SAFE AI PARSING (never crashes)
+    -------------------------------------------------- */
     let reply = `I can offer ₹${fallbackPrice}. Want me to lock it in?`;
     let finalPrice = fallbackPrice;
     let intent = "NEGOTIATE";
@@ -88,24 +99,36 @@ User: "${message}"
     try {
       const outer = JSON.parse(aiText);
       nextThreadId = outer.threadId || threadId;
+
       const inner = (outer.response || "")
         .replace(/```json|```/gi, "")
         .match(/\{[\s\S]*?\}/)?.[0];
+
       if (inner) {
         const parsed = JSON.parse(inner);
-        if (parsed.reply) reply = parsed.reply;
-        if (parsed.final_price) finalPrice = parsed.final_price;
-        if (parsed.intent) intent = parsed.intent;
+        if (typeof parsed.reply === "string") reply = parsed.reply;
+        if (typeof parsed.final_price === "number")
+          finalPrice = parsed.final_price;
+        if (parsed.intent === "LOCK_PRICE" || parsed.intent === "NEGOTIATE")
+          intent = parsed.intent;
       }
-    } catch {}
+    } catch {
+      console.warn("⚠️ AI parse failed — fallback used");
+    }
 
+    /* -------------------------------------------------
+       🔐 USER CONFIRMATION OVERRIDE
+    -------------------------------------------------- */
     if (/(ok|okay|deal|lock|yes|fine)/i.test(message)) {
       intent = "LOCK_PRICE";
     }
 
+    console.log("🧠 DECISION", { intent, finalPrice });
+
     let checkoutUrl = null;
 
     if (intent === "LOCK_PRICE" && finalPrice >= floorPrice) {
+      console.log("🧾 CREATING DRAFT ORDER");
       checkoutUrl = await createDraftOrder({
         variantId,
         agreedPrice: finalPrice,
@@ -128,6 +151,9 @@ User: "${message}"
   }
 }
 
+/* -------------------------------------------------
+   🛒 SHOPIFY — CREATE UNIQUE DRAFT ORDER
+-------------------------------------------------- */
 async function createDraftOrder({ variantId, agreedPrice }) {
   const shopifyRes = await fetch(
     `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/draft_orders.json`,
@@ -147,16 +173,24 @@ async function createDraftOrder({ variantId, agreedPrice }) {
             },
           ],
           note: "AI negotiated price",
+          note_attributes: [
+            {
+              name: "haggle_session",
+              value: `${variantId}_${Date.now()}`
+            }
+          ],
         },
       }),
     }
   );
 
   const text = await shopifyRes.text();
-  let data = {};
+  let data;
+
   try {
     data = JSON.parse(text);
   } catch {
+    console.error("❌ SHOPIFY NON-JSON RESPONSE", text);
     throw new Error("Shopify error");
   }
 
