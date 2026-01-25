@@ -12,7 +12,9 @@ export default async function handler(req, res) {
 
   if (req.method === "GET") {
     res.writeHead(200, corsHeaders);
-    return res.end(JSON.stringify({ status: "ok", message: "Haggle API live" }));
+    return res.end(
+      JSON.stringify({ status: "ok", message: "Haggle API live" })
+    );
   }
 
   if (req.method !== "POST") {
@@ -90,16 +92,14 @@ User: "${message}"
         const parsed = JSON.parse(inner);
         reply = parsed.reply || reply;
         finalPrice = parsed.final_price || finalPrice;
-        intent = parsed.intent || "NEGOTIATE";
+        intent = parsed.intent || intent;
       }
-    } catch {
-      console.warn("⚠️ AI parse failed, fallback used");
+    } catch (err) {
+      console.warn("⚠️ AI parse failed, fallback used", err);
     }
 
     /* ---------- BACKEND ACCEPTANCE SAFETY ---------- */
-    const userAgreed =
-      /(ok|okay|deal|lock|yes|fine)/i.test(message);
-
+    const userAgreed = /(ok|okay|deal|lock|yes|fine)/i.test(message);
     if (userAgreed) intent = "LOCK_PRICE";
 
     console.log("🧠 DECISION", { intent, finalPrice });
@@ -137,9 +137,13 @@ User: "${message}"
   }
 }
 
-/* ---------- SHOPIFY ---------- */
+/* ---------- SHOPIFY DRAFT ORDER ---------- */
 async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
-  const discount = originalPrice - agreedPrice;
+  console.log("🛒 DRAFT ORDER INPUT", {
+    variantId,
+    originalPrice,
+    agreedPrice,
+  });
 
   const res = await fetch(
     `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/draft_orders.json`,
@@ -151,20 +155,36 @@ async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
       },
       body: JSON.stringify({
         draft_order: {
-          line_items: [{ variant_id: variantId, quantity: 1 }],
-          applied_discount: {
-            description: "AI negotiated",
-            value: discount,
-            value_type: "fixed_amount",
-          },
-          note: "AI negotiated price",
+          line_items: [
+            {
+              variant_id: variantId,
+              quantity: 1,
+              price: agreedPrice, // ✅ price override (correct way)
+            },
+          ],
+          note: `AI negotiated from ₹${originalPrice} to ₹${agreedPrice}`,
         },
       }),
     }
   );
 
   const data = await res.json();
-  if (!res.ok) throw new Error("Draft order failed");
+
+  console.log(
+    "🧾 SHOPIFY DRAFT RESPONSE:",
+    JSON.stringify(data, null, 2)
+  );
+
+  if (!res.ok || !data?.draft_order) {
+    console.error("❌ SHOPIFY ERROR RESPONSE", data);
+    throw new Error("Draft order creation failed");
+  }
+
+  if (!data.draft_order.invoice_url) {
+    throw new Error("Invoice URL missing in Shopify response");
+  }
+
+  console.log("✅ INVOICE URL:", data.draft_order.invoice_url);
 
   return data.draft_order.invoice_url;
 }
