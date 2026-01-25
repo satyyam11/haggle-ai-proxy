@@ -1,6 +1,7 @@
 export const config = {
   runtime: "nodejs",
 };
+
 export default async function handler(req, res) {
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -158,10 +159,15 @@ User message:
 }
 
 /* -------------------------------------------------
-   🛒 SHOPIFY — REAL POST, REAL DRAFT, NO REUSE
+   🛒 SHOPIFY — CLEAN, STATELESS, CORRECT
 -------------------------------------------------- */
 async function createDraftOrder({ variantId, agreedPrice }) {
-  const haggleSession = `${variantId}_${Date.now()}`;
+  console.log("🧬 USING VARIANT", variantId);
+
+  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+  const haggleSession = `${variantId}_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2)}`;
 
   const payload = {
     draft_order: {
@@ -169,15 +175,14 @@ async function createDraftOrder({ variantId, agreedPrice }) {
         {
           variant_id: Number(variantId),
           quantity: 1,
-          price: String(agreedPrice), // STRING is IMPORTANT
+          price: String(agreedPrice),
+          custom: true, // 🔥 REQUIRED to force price
         },
       ],
       note: "AI negotiated price",
       note_attributes: [
-        {
-          name: "haggle_session",
-          value: haggleSession,
-        },
+        { name: "haggle_session", value: haggleSession },
+        { name: "haggle_expires_at", value: String(expiresAt) },
       ],
     },
   };
@@ -202,10 +207,14 @@ async function createDraftOrder({ variantId, agreedPrice }) {
   console.log("🧾 SHOPIFY STATUS", res.status);
   console.log("🧾 SHOPIFY RESPONSE", JSON.stringify(data, null, 2));
 
-  if (!res.ok || !data.draft_order || !data.draft_order.invoice_url) {
+  const draft =
+    data.draft_order ||
+    (Array.isArray(data.draft_orders) ? data.draft_orders[0] : null);
+
+  if (!res.ok || !draft || !draft.invoice_url) {
     throw new Error("Draft order creation failed");
   }
 
-  console.log("✅ INVOICE URL", data.draft_order.invoice_url);
-  return data.draft_order.invoice_url;
+  console.log("✅ INVOICE URL", draft.invoice_url);
+  return draft.invoice_url;
 }
