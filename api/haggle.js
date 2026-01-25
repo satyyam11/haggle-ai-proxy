@@ -5,6 +5,7 @@ export default async function handler(req, res) {
     "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
   };
 
+  /* ---------------- CORS ---------------- */
   if (req.method === "OPTIONS") {
     res.writeHead(200, corsHeaders);
     return res.end();
@@ -20,9 +21,7 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ error: "Method Not Allowed" }));
   }
 
-  /* -------------------------------------------------
-     🧱 BODY SAFETY (Vercel-safe parsing)
-  -------------------------------------------------- */
+  /* ---------------- BODY SAFETY ---------------- */
   let body = req.body;
   if (!body || typeof body === "string") {
     try {
@@ -51,20 +50,18 @@ export default async function handler(req, res) {
     const floorPrice = Math.round(basePrice * 0.8);
     const fallbackPrice = Math.round(basePrice * 0.9);
 
-    /* -------------------------------------------------
-       🤖 AI PROMPT (STRICT JSON, DEMO SAFE)
-    -------------------------------------------------- */
+    /* ---------------- AI PROMPT ---------------- */
     const aiPrompt = `
 You are HAGGLE, an AI price negotiator.
 
 STRICT RULES:
 - Reply ONLY valid JSON
-- No markdown, no explanations
-- No new keys
-- Never mention checkout, cart, URL, payment
-- Never exceed 20% discount
+- No markdown
+- No explanations
+- Never mention checkout, cart, URL, or payment
+- Max discount: 20%
 
-JSON SCHEMA:
+JSON FORMAT ONLY:
 {
   "reply": string,
   "final_price": number,
@@ -78,9 +75,7 @@ User message:
 "${message}"
 `.trim();
 
-    /* -------------------------------------------------
-       🔌 CALL NEW AI WEBHOOK (HARDCODED AS REQUESTED)
-    -------------------------------------------------- */
+    /* ---------------- AI WEBHOOK ---------------- */
     const aiRes = await fetch(
       "https://connect.testmyprompt.com/webhook/69769887fe2b20e0df198578",
       {
@@ -100,9 +95,7 @@ User message:
     const aiText = await aiRes.text();
     console.log("🤖 RAW AI RESPONSE", aiText);
 
-    /* -------------------------------------------------
-       🧠 SAFE AI PARSING (NEVER CRASHES)
-    -------------------------------------------------- */
+    /* ---------------- SAFE AI PARSING ---------------- */
     let reply = `I can offer ₹${fallbackPrice}. Want me to lock it in?`;
     let finalPrice = fallbackPrice;
     let intent = "NEGOTIATE";
@@ -125,12 +118,10 @@ User message:
           intent = parsed.intent;
       }
     } catch {
-      console.warn("⚠️ AI parse failed — using fallback");
+      console.warn("⚠️ AI parse failed — fallback used");
     }
 
-    /* -------------------------------------------------
-       🔐 USER CONFIRMATION OVERRIDE (SOURCE OF TRUTH)
-    -------------------------------------------------- */
+    /* ---------------- USER CONFIRMATION OVERRIDE ---------------- */
     if (/(ok|okay|deal|lock|yes|fine)/i.test(message)) {
       intent = "LOCK_PRICE";
     }
@@ -164,14 +155,31 @@ User message:
 }
 
 /* -------------------------------------------------
-   🛒 SHOPIFY — FORCE UNIQUE DRAFT ORDER
+   🛒 SHOPIFY — REAL POST, REAL DRAFT, NO REUSE
 -------------------------------------------------- */
 async function createDraftOrder({ variantId, agreedPrice }) {
   const haggleSession = `${variantId}_${Date.now()}`;
 
-  console.log("🧪 SENDING NOTE ATTRIBUTES", {
-    haggle_session: haggleSession,
-  });
+  const payload = {
+    draft_order: {
+      line_items: [
+        {
+          variant_id: Number(variantId),
+          quantity: 1,
+          price: String(agreedPrice), // STRING is IMPORTANT
+        },
+      ],
+      note: "AI negotiated price",
+      note_attributes: [
+        {
+          name: "haggle_session",
+          value: haggleSession,
+        },
+      ],
+    },
+  };
+
+  console.log("🧪 FINAL DRAFT PAYLOAD", JSON.stringify(payload, null, 2));
 
   const res = await fetch(
     `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/draft_orders.json`,
@@ -180,48 +188,21 @@ async function createDraftOrder({ variantId, agreedPrice }) {
       headers: {
         "X-Shopify-Access-Token": process.env.SHOPIFY_OAUTH_TOKEN,
         "Content-Type": "application/json",
+        "Cache-Control": "no-store",
       },
-      body: JSON.stringify({
-        draft_order: {
-          line_items: [
-            {
-              variant_id: variantId,
-              quantity: 1,
-              price: agreedPrice,
-            },
-          ],
-          note: "AI negotiated price",
-          note_attributes: [
-            {
-              name: "haggle_session",
-              value: haggleSession,
-            },
-          ],
-        },
-      }),
+      body: JSON.stringify(payload),
     }
   );
 
-  const text = await res.text();
-  let data;
+  const data = await res.json();
 
-  try {
-    data = JSON.parse(text);
-  } catch {
-    console.error("❌ SHOPIFY NON-JSON RESPONSE", text);
-    throw new Error("Shopify response invalid");
-  }
+  console.log("🧾 SHOPIFY STATUS", res.status);
+  console.log("🧾 SHOPIFY RESPONSE", JSON.stringify(data, null, 2));
 
-  console.log("🧾 SHOPIFY DRAFT RESPONSE", JSON.stringify(data, null, 2));
-
-  const draftOrder =
-    data?.draft_order ||
-    (Array.isArray(data?.draft_orders) ? data.draft_orders[0] : null);
-
-  if (!draftOrder || !draftOrder.invoice_url) {
+  if (!res.ok || !data.draft_order || !data.draft_order.invoice_url) {
     throw new Error("Draft order creation failed");
   }
 
-  console.log("✅ INVOICE URL", draftOrder.invoice_url);
-  return draftOrder.invoice_url;
+  console.log("✅ INVOICE URL", data.draft_order.invoice_url);
+  return data.draft_order.invoice_url;
 }
