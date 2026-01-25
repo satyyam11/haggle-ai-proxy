@@ -1,3 +1,6 @@
+export const config = {
+  runtime: "nodejs",
+};
 export default async function handler(req, res) {
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
