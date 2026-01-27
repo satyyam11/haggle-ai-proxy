@@ -51,7 +51,7 @@ export default async function handler(req, res) {
 
   try {
     const basePrice = Number(price);
-    const floorPrice = Math.round(basePrice * 0.8);
+    const floorPrice = Math.round(basePrice * 0.8); // max 20% discount
     const fallbackPrice = Math.round(basePrice * 0.9);
 
     /* ---------------- AI PROMPT ---------------- */
@@ -138,6 +138,7 @@ User message:
       console.log("🧾 CREATING DRAFT ORDER");
       checkoutUrl = await createDraftOrder({
         variantId,
+        originalPrice: basePrice,
         agreedPrice: finalPrice,
       });
     }
@@ -159,29 +160,20 @@ User message:
 }
 
 /* -------------------------------------------------
-   🛒 SHOPIFY — CORRECT DRAFT ORDER CREATION
+   🛒 SHOPIFY — STABLE, STATELESS, CORRECT
 -------------------------------------------------- */
-async function createDraftOrder({ variantId, agreedPrice }) {
+async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
   console.log("🧬 USING VARIANT", variantId);
 
   const haggleSession = `${variantId}_${Date.now()}_${Math.random()
     .toString(36)
     .slice(2)}`;
 
-  // IMPORTANT: Fetch variant price ONCE (Shopify source of truth)
-  const variantRes = await fetch(
-    `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/variants/${variantId}.json`,
-    {
-      headers: {
-        "X-Shopify-Access-Token": process.env.SHOPIFY_OAUTH_TOKEN,
-      },
-    }
-  );
+  const discountAmount = originalPrice - agreedPrice;
 
-  const variantData = await variantRes.json();
-  const originalPrice = Number(variantData.variant.price);
-
-  const discountAmount = Math.max(0, originalPrice - agreedPrice);
+  if (discountAmount <= 0) {
+    throw new Error("Invalid discount calculation");
+  }
 
   const payload = {
     draft_order: {
@@ -195,16 +187,13 @@ async function createDraftOrder({ variantId, agreedPrice }) {
         description: "AI negotiated price",
         value_type: "fixed_amount",
         value: discountAmount.toFixed(2),
-        amount: discountAmount.toFixed(2),
         title: "Haggle Discount",
       },
       note: "AI negotiated price",
       note_attributes: [
         { name: "haggle_session", value: haggleSession },
-        {
-          name: "haggle_final_price",
-          value: String(agreedPrice),
-        },
+        { name: "haggle_original_price", value: String(originalPrice) },
+        { name: "haggle_final_price", value: String(agreedPrice) },
       ],
     },
   };
