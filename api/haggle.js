@@ -126,7 +126,7 @@ User message:
     }
 
     /* ---------------- USER CONFIRMATION OVERRIDE ---------------- */
-    if (/(ok|okay|deal|lock|yes|fine)/i.test(message)) {
+    if (/(ok|okay|deal|lock|yes|fine|done)/i.test(message)) {
       intent = "LOCK_PRICE";
     }
 
@@ -159,7 +159,7 @@ User message:
 }
 
 /* -------------------------------------------------
-   🛒 SHOPIFY — CLEAN, STATELESS, CORRECT
+   🛒 SHOPIFY — CORRECT DRAFT ORDER CREATION
 -------------------------------------------------- */
 async function createDraftOrder({ variantId, agreedPrice }) {
   console.log("🧬 USING VARIANT", variantId);
@@ -176,7 +176,6 @@ async function createDraftOrder({ variantId, agreedPrice }) {
           variant_id: Number(variantId),
           quantity: 1,
           price: String(agreedPrice),
-          custom: true, // 🔥 REQUIRED to force price
         },
       ],
       note: "AI negotiated price",
@@ -207,14 +206,10 @@ async function createDraftOrder({ variantId, agreedPrice }) {
   console.log("🧾 SHOPIFY STATUS", res.status);
   console.log("🧾 SHOPIFY RESPONSE", JSON.stringify(data, null, 2));
 
-  const draft =
-    data.draft_order ||
-    (Array.isArray(data.draft_orders) ? data.draft_orders[0] : null);
-
-  if (!res.ok || !draft || !draft.invoice_url) {
+  if (!res.ok || !data?.draft_order?.invoice_url) {
     throw new Error("Draft order creation failed");
   }
 
-  console.log("✅ INVOICE URL", draft.invoice_url);
-  return draft.invoice_url;
+  console.log("✅ INVOICE URL", data.draft_order.invoice_url);
+  return data.draft_order.invoice_url;
 }
