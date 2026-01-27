@@ -201,13 +201,12 @@ async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
   console.log("🧪 FINAL DRAFT PAYLOAD", JSON.stringify(payload, null, 2));
 
   const res = await fetch(
-    `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/draft_orders.json`,
+    `https://awux0c-m5.myshopify.com/admin/api/2024-01/draft_orders.json`,
     {
       method: "POST",
       headers: {
         "X-Shopify-Access-Token": process.env.SHOPIFY_OAUTH_TOKEN,
         "Content-Type": "application/json",
-        "Cache-Control": "no-store",
       },
       body: JSON.stringify(payload),
     }
