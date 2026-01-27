@@ -164,10 +164,24 @@ User message:
 async function createDraftOrder({ variantId, agreedPrice }) {
   console.log("🧬 USING VARIANT", variantId);
 
-  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
   const haggleSession = `${variantId}_${Date.now()}_${Math.random()
     .toString(36)
     .slice(2)}`;
+
+  // IMPORTANT: Fetch variant price ONCE (Shopify source of truth)
+  const variantRes = await fetch(
+    `https://${process.env.SHOPIFY_SHOP}/admin/api/2024-01/variants/${variantId}.json`,
+    {
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_OAUTH_TOKEN,
+      },
+    }
+  );
+
+  const variantData = await variantRes.json();
+  const originalPrice = Number(variantData.variant.price);
+
+  const discountAmount = Math.max(0, originalPrice - agreedPrice);
 
   const payload = {
     draft_order: {
@@ -175,13 +189,22 @@ async function createDraftOrder({ variantId, agreedPrice }) {
         {
           variant_id: Number(variantId),
           quantity: 1,
-          price: String(agreedPrice),
         },
       ],
+      applied_discount: {
+        description: "AI negotiated price",
+        value_type: "fixed_amount",
+        value: discountAmount.toFixed(2),
+        amount: discountAmount.toFixed(2),
+        title: "Haggle Discount",
+      },
       note: "AI negotiated price",
       note_attributes: [
         { name: "haggle_session", value: haggleSession },
-        { name: "haggle_expires_at", value: String(expiresAt) },
+        {
+          name: "haggle_final_price",
+          value: String(agreedPrice),
+        },
       ],
     },
   };
