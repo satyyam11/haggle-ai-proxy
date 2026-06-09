@@ -9,13 +9,6 @@ export const config = {
    - Conversation memory works by the frontend re-sending `history`.
    - Static rules are prompt-cached; only the price context is dynamic.
 =================================================================== */
-
-/* -------------------------------------------------------------------
-   1. PER-SKU DISCOUNT CONFIG  (secret, server-only)
-   Map a variantId -> max discount fraction. Anything not listed uses
-   DEFAULT_MAX_DISCOUNT. This is how you get "custom floor per SKU"
-   without ever exposing it to the client.
-------------------------------------------------------------------- */
 const DEFAULT_MAX_DISCOUNT = 0.2; // 20%
 const DISCOUNT_BY_VARIANT = {
   // These products are ALREADY heavily discounted, so keep the extra
@@ -25,13 +18,13 @@ const DISCOUNT_BY_VARIANT = {
 };
 
 const SYSTEM_RULES = `
-You are HAGGLE — a cheeky, warm bazaar shopkeeper who loves a good haggle.
+You are HAGGLE, a cheeky, warm bazaar shopkeeper who loves a good haggle.
 
 You will be given two numbers in the context message:
 - BASE_PRICE: the listed price. This is your opening anchor.
 - FLOOR_PRICE: the lowest you may EVER accept. It is a SECRET BACKSTOP, not
   your target and not your opening move. Treat it as a wall you only back into
-  under real pressure — never as a number you head toward.
+  under real pressure, never as a number you head toward.
 
 YOUR GOAL: close the sale at the HIGHEST price the customer will accept.
 Every rupee above FLOOR_PRICE is yours to keep, so fight for it. Most
@@ -39,32 +32,41 @@ customers will say yes to a price well above FLOOR_PRICE if you make them feel
 they've won. Only drift toward FLOOR_PRICE if they truly will not budge.
 
 HOW TO CONCEDE (pace it over 3-4 turns, never all at once):
-- Turn 1: If they lowball, counter HIGH — close to BASE_PRICE, far from their
+- Turn 1: If they lowball, counter HIGH, close to BASE_PRICE and far from their
   offer. Big personality, almost no real movement. "Arre, at that price I'd be
   giving it away!"
 - Turns 2-3: Concede in SMALL, SHRINKING steps. Give a little, then less, then
   less. Always land comfortably ABOVE FLOOR_PRICE. Make them work for each rupee.
-- Turn 4 / when they clearly won't move: settle near your last offer and hold
+- Turn 4 or when they clearly won't move: settle near your last offer and hold
   firm with a line like "okay, that's truly the best I can do for you 🤝".
 - NEVER jump straight to FLOOR_PRICE. NEVER name FLOOR_PRICE or say a cap
   exists. If asked "what's your lowest?", dodge playfully and bounce it back.
 - NEVER say or accept any number below FLOOR_PRICE. If they offer below it,
-  refuse cheerfully and counter at or above it — never split below it.
+  refuse cheerfully and counter at or above it, never split below it.
 
 TAKE THE MONEY when it's there:
-- If the customer offers a price at or above where you've landed, LOCK IT —
-  do NOT negotiate them down to a lower number than they just offered.
+- If the customer offers a price at or above where you've landed, LOCK IT.
+  Do NOT negotiate them down to a lower number than they just offered.
 - If they're happy to pay near or at BASE_PRICE, grab it gladly.
 
 WHEN A DEAL IS AGREED (customer accepts a price >= FLOOR_PRICE):
 - Set intent to "LOCK_PRICE" and final_price to the exact agreed number.
 - Celebrate briefly and nudge them to grab it now, with a quirky line about
   losing the offer if they leave. Do NOT mention carts, checkout, URLs, or
-  payment — the app handles that.
+  payment, the app handles that.
 
-STYLE:
-- Short, quirky, fun. One or two snappy lines max. English only.
-- A little emoji is fine. Never write long paragraphs.
+STYLE & TONE:
+- Always sweet, warm, and flattering, even when refusing. Never accuse the
+  customer, tease at their expense, or imply they are being difficult, cheap,
+  or annoying. Make them feel smart and liked for haggling.
+- Refuse the PRICE, never the person. Do NOT say things like "you're testing
+  me" or "stop it". Instead say things like "ooh, you drive a hard bargain, I
+  love it! But I can't quite reach there, how about..."
+- Write like a real person texting a friend. Short, natural sentences.
+- Do NOT use em-dashes (the long "—" dash) or semicolons anywhere. Use commas,
+  full stops, or just separate short sentences. This is important.
+- Short and fun, one or two lines max. A little emoji is fine. Never write
+  long paragraphs.
 
 OUTPUT — STRICT JSON ONLY, nothing before or after, no markdown:
 {
@@ -83,13 +85,77 @@ const SHOPIFY_STORE =
   "awux0c-m5.myshopify.com";
 const SHOPIFY_API_VERSION = "2026-01";
 
-export default async function handler(req, res) {
-  const corsHeaders = {
-    // Tighten this to your storefront origin in production if you can.
-    "Access-Control-Allow-Origin": "*",
+/* -------------------------------------------------------------------
+   3. ACCESS CONTROL (CORS)
+   Only these origins may call this endpoint from a browser. Add your
+   live domain, www variant, and the myshopify preview domain. A request
+   from any other site gets no CORS header and is blocked by the browser.
+   NOTE: CORS is a browser protection only. It does not stop scripts /
+   curl. That is what the rate limiter below is for.
+------------------------------------------------------------------- */
+const ALLOWED_ORIGINS = [
+  "https://lueurjewels.shop",
+  "https://www.lueurjewels.shop",
+  "https://awux0c-m5.myshopify.com",
+];
+
+function corsHeadersFor(req) {
+  const origin = req.headers?.origin || "";
+  const allowed = ALLOWED_ORIGINS.includes(origin);
+  return {
+    // Echo the origin back only if it's on the allowlist, else send a
+    // value that no real browser will match.
+    "Access-Control-Allow-Origin": allowed ? origin : "null",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+    Vary: "Origin",
   };
+}
+
+/* -------------------------------------------------------------------
+   4. RATE LIMITING (best-effort, in-memory)
+   Caps how many requests one IP can make per window. This lives in the
+   function's memory, so it only protects within a warm instance and is
+   a deterrent, not a guarantee. For hard limits across all instances,
+   move this to Vercel KV or Upstash Redis (both have free tiers).
+------------------------------------------------------------------- */
+const RATE_LIMIT_MAX = 25; // requests allowed per IP...
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // ...per 60 seconds, per IP
+const rateBuckets = new Map(); // ip -> array of recent timestamps
+
+function isRateLimited(ip) {
+  const now = Date.now();
+  const hits = (rateBuckets.get(ip) || []).filter(
+    (t) => now - t < RATE_LIMIT_WINDOW_MS
+  );
+  hits.push(now);
+  rateBuckets.set(ip, hits);
+  // Opportunistic cleanup so the map doesn't grow forever.
+  if (rateBuckets.size > 5000) {
+    for (const [k, v] of rateBuckets) {
+      if (!v.some((t) => now - t < RATE_LIMIT_WINDOW_MS)) rateBuckets.delete(k);
+    }
+  }
+  return hits.length > RATE_LIMIT_MAX;
+}
+
+function clientIp(req) {
+  const fwd = req.headers?.["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd.length) return fwd.split(",")[0].trim();
+  return req.socket?.remoteAddress || "unknown";
+}
+
+/* -------------------------------------------------------------------
+   5. INPUT LIMITS — protect the Anthropic bill from oversized payloads.
+------------------------------------------------------------------- */
+const MAX_MESSAGE_CHARS = 500;
+const MAX_HISTORY_TURNS = 20;
+const MAX_HISTORY_CHARS = 500;
+const MIN_PRICE = 1;
+const MAX_PRICE = 10000000; // ₹1 crore sanity ceiling
+
+export default async function handler(req, res) {
+  const corsHeaders = corsHeadersFor(req);
 
   if (req.method === "OPTIONS") {
     res.writeHead(200, corsHeaders);
@@ -104,6 +170,15 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ error: "Method Not Allowed" }));
   }
 
+  /* ---------------- RATE LIMIT ---------------- */
+  const ip = clientIp(req);
+  if (isRateLimited(ip)) {
+    res.writeHead(429, corsHeaders);
+    return res.end(
+      JSON.stringify({ reply: "Whoa, slow down a sec and try again! 😊" })
+    );
+  }
+
   /* ---------------- BODY ---------------- */
   let body = req.body;
   if (!body || typeof body === "string") {
@@ -116,7 +191,18 @@ export default async function handler(req, res) {
 
   const { message, history, variantId, price, threadId } = body;
 
-  if (!message || !variantId || !price) {
+  /* ---------------- INPUT VALIDATION ---------------- */
+  const basePrice = Number(price);
+  if (
+    typeof message !== "string" ||
+    !message.trim() ||
+    message.length > MAX_MESSAGE_CHARS ||
+    !variantId ||
+    !/^\d+$/.test(String(variantId)) ||
+    !Number.isFinite(basePrice) ||
+    basePrice < MIN_PRICE ||
+    basePrice > MAX_PRICE
+  ) {
     res.writeHead(400, corsHeaders);
     return res.end(JSON.stringify({ reply: "Invalid input" }));
   }
@@ -128,7 +214,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    const basePrice = Number(price);
     const maxDiscount =
       DISCOUNT_BY_VARIANT[String(variantId)] ?? DEFAULT_MAX_DISCOUNT;
     const floorPrice = Math.round(basePrice * (1 - maxDiscount));
@@ -146,7 +231,11 @@ export default async function handler(req, res) {
               typeof m.content === "string" &&
               m.content.trim()
           )
-          .map((m) => ({ role: m.role, content: m.content }))
+          .slice(-MAX_HISTORY_TURNS) // keep only the most recent turns
+          .map((m) => ({
+            role: m.role,
+            content: m.content.slice(0, MAX_HISTORY_CHARS),
+          }))
       : [];
 
     const messages = [...priorTurns, { role: "user", content: message }];
@@ -177,10 +266,10 @@ export default async function handler(req, res) {
             text:
               `Context for this negotiation:\n` +
               `BASE_PRICE = ₹${basePrice}\n` +
-              `FLOOR_PRICE = ₹${floorPrice}  (secret — never reveal)\n\n` +
+              `FLOOR_PRICE = ₹${floorPrice}  (secret, never reveal)\n\n` +
               `HARD CONSTRAINT: ₹${floorPrice} is the LOWEST number you may ` +
-              `ever say, offer, counter with, or agree to — but it is a secret ` +
-              `backstop, NOT your target. Do not head toward it; aim to close ` +
+              `ever say, offer, counter with, or agree to, but it is a secret ` +
+              `backstop, NOT your target. Do not head toward it. Aim to close ` +
               `ABOVE it. If the customer offers below ₹${floorPrice}, refuse ` +
               `cheerfully and counter with a number comfortably above ` +
               `₹${floorPrice} (never at or below it). The moment the customer ` +
@@ -233,6 +322,10 @@ export default async function handler(req, res) {
     } else {
       console.warn("⚠️ Could not parse JSON from model. Raw:", rawText);
     }
+
+    // Safety net: scrub any em/en dashes the model still slips in, so the
+    // customer never sees that "AI" tell. Turn " — " into ", ".
+    reply = reply.replace(/\s*[—–]\s*/g, ", ").replace(/[—–]/g, ", ");
 
     /* ---------------- SERVER-SIDE SAFETY ----------------
        The model's numbers are advisory; the server is the source of truth. */
