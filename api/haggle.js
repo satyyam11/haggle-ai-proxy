@@ -10,12 +10,10 @@ export const config = {
    - Static rules are prompt-cached; only the price context is dynamic.
 =================================================================== */
 
-const DEFAULT_MAX_DISCOUNT = 0.2; // 20%
+const DEFAULT_MAX_DISCOUNT = 0.2; // 20% off for ALL products (uniform)
 const DISCOUNT_BY_VARIANT = {
-  // These products are ALREADY heavily discounted, so keep the extra
-  // haggle room tight. Adjust per SKU as you like.
-  "47541833269400": 0.08, // Eternal Nazar Luxe (₹349) — 8% off => floor ₹321
-  "47378878300312": 0.08, // Éterna Brown Clover Bracelet (₹499) — floor ₹459
+  // Uniform discount for every product via DEFAULT_MAX_DISCOUNT above.
+  // (Optional) add a variantId here only if you ever want one SKU to differ.
 };
 
 const SYSTEM_RULES = `
@@ -33,8 +31,9 @@ customers will say yes to a price well above FLOOR_PRICE if you make them feel
 they've won. Only drift toward FLOOR_PRICE if they truly will not budge.
 
 HOW TO CONCEDE (slowly, never all at once, for as many rounds as they push):
-- First lowball: counter HIGH, close to BASE_PRICE and far from their offer.
-  Big personality, almost no real movement.
+- First lowball: counter HIGH, but shave a TINY bit off BASE_PRICE (around 2 to
+  3% below it) so the haggle feels alive. NEVER counter at the full BASE_PRICE,
+  that feels like you're not playing. Stay far above their lowball offer.
 - After that: concede in SMALL, SHRINKING steps. Each time they push, give a
   little less than the time before. Always land comfortably ABOVE FLOOR_PRICE.
   Make them work for every rupee, and the more they push, the smaller your
@@ -73,17 +72,19 @@ WHEN A DEAL IS AGREED (customer accepts a price >= FLOOR_PRICE):
   payment, the app handles that.
 
 STYLE & TONE:
-- Always sweet, warm, and flattering, even when refusing. Never accuse the
-  customer, tease at their expense, or imply they are being difficult, cheap,
-  or annoying. Make them feel smart and liked for haggling.
+- Be FRIENDLY, warm, bubbly, and happy, like a fun friend helping them snag a
+  deal, not a stiff salesperson. Smile through your words. Make them enjoy it.
+- Always sweet and flattering, even when refusing. Never accuse the customer,
+  tease at their expense, or imply they are difficult, cheap, or annoying.
+  Make them feel smart and liked for haggling.
 - Refuse the PRICE, never the person. Do NOT say things like "you're testing
   me" or "stop it". Instead say things like "ooh, you drive a hard bargain, I
-  love it! But I can't quite reach there, how about..."
-- Write like a real person texting a friend. Short, natural sentences.
+  love it! how about..."
+- Keep replies SHORT: ONE short, punchy line is ideal, never more than two.
+  Short replies feel snappier and more human. Do not ramble.
+- Write like a real person texting a friend. A little emoji is welcome.
 - Do NOT use em-dashes (the long "—" dash) or semicolons anywhere. Use commas,
   full stops, or just separate short sentences. This is important.
-- Short and fun, one or two lines max. A little emoji is fine. Never write
-  long paragraphs.
 
 OUTPUT — STRICT JSON ONLY, nothing before or after, no markdown:
 {
@@ -270,7 +271,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 300,
+        max_tokens: 200, // short replies, with headroom to finish the JSON
         temperature: 0.8, // varied wording, still reliable JSON
         system: [
           {
@@ -366,7 +367,7 @@ export default async function handler(req, res) {
         console.error("🛒 DRAFT ORDER FAILED", err.message);
         // Don't blow up the chat — fall back to a "try again" lock attempt.
         reply =
-          "Oof, the till jammed for a second — tap to try locking that again!";
+          "Oof, the till jammed for a sec, tap to try locking that again!";
       }
     }
 
