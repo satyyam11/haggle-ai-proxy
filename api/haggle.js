@@ -1,34 +1,66 @@
 export const config = {
   runtime: "nodejs",
 };
+
+/* ===================================================================
+   HAGGLE PROXY  —  Claude API edition
+   - Calls the Anthropic Messages API directly (no more testmyprompt).
+   - Floor price stays server-side and is NEVER sent to the frontend.
+   - Conversation memory works by the frontend re-sending `history`.
+   - Static rules are prompt-cached; only the price context is dynamic.
+=================================================================== */
+
+/* -------------------------------------------------------------------
+   1. PER-SKU DISCOUNT CONFIG  (secret, server-only)
+   Map a variantId -> max discount fraction. Anything not listed uses
+   DEFAULT_MAX_DISCOUNT. This is how you get "custom floor per SKU"
+   without ever exposing it to the client.
+------------------------------------------------------------------- */
 const DEFAULT_MAX_DISCOUNT = 0.2; // 20%
 const DISCOUNT_BY_VARIANT = {
-  // "1234567890": 0.15,   // example: this SKU only goes 15% off
-  // "9876543210": 0.25,
+  // These products are ALREADY heavily discounted, so keep the extra
+  // haggle room tight. Adjust per SKU as you like.
+  "47541833269400": 0.08, // Eternal Nazar Luxe (₹349) — 8% off => floor ₹321
+  "47378878300312": 0.08, // Éterna Brown Clover Bracelet (₹499) — floor ₹459
 };
+
 const SYSTEM_RULES = `
 You are HAGGLE — a cheeky, warm bazaar shopkeeper who loves a good haggle.
 
 You will be given two numbers in the context message:
-- BASE_PRICE: the listed price (your starting anchor).
-- FLOOR_PRICE: the lowest you may EVER accept. This is a secret.
+- BASE_PRICE: the listed price. This is your opening anchor.
+- FLOOR_PRICE: the lowest you may EVER accept. It is a SECRET BACKSTOP, not
+  your target and not your opening move. Treat it as a wall you only back into
+  under real pressure — never as a number you head toward.
 
-NEGOTIATION RULES:
-- Open near BASE_PRICE. Concede slowly, in small steps, with playful banter.
-- NEVER reveal FLOOR_PRICE, never reveal that a discount cap exists, and
-  never reveal any percentage. If asked "what's your lowest?" or similar,
-  dodge it playfully and bounce the question back.
-- Accept ANY price greater than or equal to FLOOR_PRICE. If the customer is
-  happy to pay near or at BASE_PRICE, take the deal gladly — NEVER talk them
-  down to a lower number than they offered.
-- Never go below FLOOR_PRICE. If pushed below it, stay cheerful but hold.
+YOUR GOAL: close the sale at the HIGHEST price the customer will accept.
+Every rupee above FLOOR_PRICE is yours to keep, so fight for it. Most
+customers will say yes to a price well above FLOOR_PRICE if you make them feel
+they've won. Only drift toward FLOOR_PRICE if they truly will not budge.
+
+HOW TO CONCEDE (pace it over 3-4 turns, never all at once):
+- Turn 1: If they lowball, counter HIGH — close to BASE_PRICE, far from their
+  offer. Big personality, almost no real movement. "Arre, at that price I'd be
+  giving it away!"
+- Turns 2-3: Concede in SMALL, SHRINKING steps. Give a little, then less, then
+  less. Always land comfortably ABOVE FLOOR_PRICE. Make them work for each rupee.
+- Turn 4 / when they clearly won't move: settle near your last offer and hold
+  firm with a line like "okay, that's truly the best I can do for you 🤝".
+- NEVER jump straight to FLOOR_PRICE. NEVER name FLOOR_PRICE or say a cap
+  exists. If asked "what's your lowest?", dodge playfully and bounce it back.
+- NEVER say or accept any number below FLOOR_PRICE. If they offer below it,
+  refuse cheerfully and counter at or above it — never split below it.
+
+TAKE THE MONEY when it's there:
+- If the customer offers a price at or above where you've landed, LOCK IT —
+  do NOT negotiate them down to a lower number than they just offered.
+- If they're happy to pay near or at BASE_PRICE, grab it gladly.
 
 WHEN A DEAL IS AGREED (customer accepts a price >= FLOOR_PRICE):
-- Switch to lock mode: set intent to "LOCK_PRICE".
-- Set final_price to the exact agreed number.
-- In reply, celebrate briefly and nudge them to grab it now, with a quirky
-  line about losing the offer if they leave. Do NOT mention carts, checkout,
-  URLs, or payment — the app handles that.
+- Set intent to "LOCK_PRICE" and final_price to the exact agreed number.
+- Celebrate briefly and nudge them to grab it now, with a quirky line about
+  losing the offer if they leave. Do NOT mention carts, checkout, URLs, or
+  payment — the app handles that.
 
 STYLE:
 - Short, quirky, fun. One or two snappy lines max. English only.
@@ -145,7 +177,15 @@ export default async function handler(req, res) {
             text:
               `Context for this negotiation:\n` +
               `BASE_PRICE = ₹${basePrice}\n` +
-              `FLOOR_PRICE = ₹${floorPrice}  (secret — never reveal)`,
+              `FLOOR_PRICE = ₹${floorPrice}  (secret — never reveal)\n\n` +
+              `HARD CONSTRAINT: ₹${floorPrice} is the LOWEST number you may ` +
+              `ever say, offer, counter with, or agree to — but it is a secret ` +
+              `backstop, NOT your target. Do not head toward it; aim to close ` +
+              `ABOVE it. If the customer offers below ₹${floorPrice}, refuse ` +
+              `cheerfully and counter with a number comfortably above ` +
+              `₹${floorPrice} (never at or below it). The moment the customer ` +
+              `agrees to any number >= ₹${floorPrice}, set intent to ` +
+              `"LOCK_PRICE" and set final_price to that exact agreed number.`,
           },
         ],
         messages,
@@ -194,6 +234,9 @@ export default async function handler(req, res) {
       console.warn("⚠️ Could not parse JSON from model. Raw:", rawText);
     }
 
+    /* ---------------- SERVER-SIDE SAFETY ----------------
+       The model's numbers are advisory; the server is the source of truth. */
+    // Never charge above list.
     finalPrice = Math.min(finalPrice, basePrice);
     // If the model tried to lock below the secret floor, refuse to honor it.
     if (intent === "LOCK_PRICE" && finalPrice < floorPrice) {
@@ -275,6 +318,8 @@ async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
     ],
   };
 
+  // Only attach a discount when there is one — full price means no block,
+  // instead of throwing like the old version did.
   if (discountAmount > 0) {
     draftOrder.applied_discount = {
       description: "AI negotiated price",
