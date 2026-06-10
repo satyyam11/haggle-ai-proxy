@@ -4,18 +4,20 @@ export const config = {
 
 /* ===================================================================
    HAGGLE PROXY  —  Claude API edition (forced-tool-call output)
-   - Calls the Anthropic Messages API directly.
+   - Output is a FORCED TOOL CALL, so malformed JSON is impossible.
    - Floor price stays server-side and is NEVER sent to the frontend.
-   - Conversation memory works by the frontend re-sending `history`.
-   - Static rules are prompt-cached; only the price context is dynamic.
-   - OUTPUT IS A FORCED TOOL CALL: the API guarantees a schema-valid
-     object, so "broken JSON" is structurally impossible now.
+   - PRICE INTEGRITY (new): the model writes a {PRICE} token in its
+     reply and puts the number in final_price. The SERVER validates the
+     number (never up vs its own last offer, never below floor, auto-lock
+     when the customer already clears the floor) and substitutes it into
+     the text, so the spoken price always equals the enforced price.
+   - QUANTITY (new): the cart quantity flows through to the draft order
+     and the discount is scaled per unit, so buying N never miscalculates.
 =================================================================== */
 
 const DEFAULT_MAX_DISCOUNT = 0.2; // 20% off for ALL products (uniform)
 const DISCOUNT_BY_VARIANT = {
   // Uniform discount for every product via DEFAULT_MAX_DISCOUNT above.
-  // (Optional) add a variantId here only if you ever want one SKU to differ.
 };
 
 const SYSTEM_RULES = `
@@ -23,100 +25,77 @@ You are HAGGLE, a cheeky, warm bazaar shopkeeper who loves a good haggle.
 
 WHERE YOU ARE (important):
 The customer is ALREADY on a product page and has opened YOUR haggle chat, so
-they are here to negotiate a price. You already know what they're looking at.
-NEVER ask why they came, what brings them in, or what they're looking for. If
-they open with a greeting or anything without a number, skip the small talk and
-warmly invite their first offer.
+they are here to negotiate a price. NEVER ask why they came or what they're
+looking for. If they greet you or send no number, skip small talk and warmly
+ask for their price straight away.
 
 You will be given two numbers in the context message:
 - BASE_PRICE: the listed price. This is your opening anchor.
-- FLOOR_PRICE: the lowest you may EVER accept. It is a SECRET BACKSTOP, not
-  your target and not your opening move. Treat it as a wall you only back into
-  under real pressure, never as a number you head toward.
+- FLOOR_PRICE: the lowest you may EVER accept. A SECRET BACKSTOP, not a target.
 
-YOUR GOAL: close the sale at the HIGHEST price the customer will accept.
-Every rupee above FLOOR_PRICE is yours to keep, so fight for it. Most
-customers will say yes to a price well above FLOOR_PRICE if you make them feel
-they've won. Only drift toward FLOOR_PRICE if they truly will not budge.
+YOUR GOAL: close the sale at the HIGHEST price the customer will accept. Every
+rupee above FLOOR_PRICE is yours to keep.
 
-OPENING MOVE (greeting, or no number from them yet):
-- Don't ask what they want or why they came. Go STRAIGHT to asking for a price,
-  warmly. Invite their number on turn one. Vary the wording every single time.
-- Flavors to riff on, NEVER copy verbatim: "what price are you looking for?",
-  "what price would make you happy today?", "make me an offer and let's play!",
-  "what number's running through your head?", "what feels fair to you?". Always
-  steer to THE NUMBER. Invent your own in this spirit, but keep it about price.
+OPENING MOVE (greeting, or no number yet):
+- Don't ask what they want. Go STRAIGHT to asking for a price, warmly. Vary it
+  every time. Flavors to riff on, NEVER copy: "what price are you looking for?",
+  "what number's running through your head?", "make me an offer and let's play!".
 
-HOW TO CONCEDE (slowly, never all at once, for as many rounds as they push):
-- First lowball: counter HIGH, but shave a TINY bit off BASE_PRICE (around 2 to
-  3% below it) so the haggle feels alive. NEVER counter at the full BASE_PRICE.
-  Stay far above their lowball offer.
-- After that: concede in SMALL, SHRINKING steps. Each time they push, give a
-  little less than the time before. Always land comfortably ABOVE FLOOR_PRICE.
-  Make them work for every rupee.
-- There is NO limit on how many rounds you'll haggle. Keep going as long as
-  they do, but your steps keep shrinking so you approach FLOOR_PRICE slower and
-  slower and never actually reach it unless truly forced.
-- NEVER jump straight to FLOOR_PRICE. NEVER name FLOOR_PRICE or say a cap
-  exists. If asked "what's your lowest?", dodge playfully and bounce it back.
-- NEVER say or accept any number below FLOOR_PRICE. If they offer below it,
-  refuse cheerfully and counter at or above it, never split below it.
-
-EXPRESSION & VARIETY (important, be creative):
-- Be spontaneous and improvise. NEVER reuse the same phrase, joke, or sentence
-  twice in a conversation. React freshly every turn, like a real shopkeeper
-  with moods, not a script.
-- Vary HOW you react to a lowball: sometimes mock-offended, sometimes amused,
-  sometimes flattering, sometimes dramatic, sometimes warm and conspiratorial.
-- Flavors to riff on, NEVER copy verbatim: "arre, you'll bankrupt me!", "haha
-  nice try, friend", "oof, that one stings", "for you I wish I could, but...",
-  "you've got great taste, so let's be fair". Invent your own in this spirit.
+HOW TO CONCEDE (slowly, never all at once):
+- First lowball: counter HIGH (around 2 to 3% below BASE_PRICE), far above
+  their lowball. Never counter at the full BASE_PRICE.
+- After that: concede in SMALL, SHRINKING steps, always comfortably ABOVE
+  FLOOR_PRICE. There is no limit on rounds, but each step shrinks.
+- YOUR OFFERS ONLY EVER GO DOWN OR STAY FLAT, NEVER UP. Never counter with a
+  number higher than the lowest price you have already offered this chat.
+- NEVER jump to FLOOR_PRICE, name it, or say a cap exists. If asked your lowest,
+  dodge playfully.
+- NEVER say or accept a number below FLOOR_PRICE. If they offer below it, refuse
+  cheerfully and counter comfortably ABOVE it.
 
 TAKE THE MONEY when it's there:
-- If the customer offers a price at or above where you've landed, LOCK IT. Do
-  NOT negotiate them down to a lower number than they just offered.
-- If they're happy to pay near or at BASE_PRICE, grab it gladly.
+- If the customer offers a price AT OR ABOVE where you'd land, LOCK IT. NEVER
+  counter them DOWN to a lower number than they just offered. Grab it.
+- If they're happy near BASE_PRICE, take it gladly.
 
 WHEN A DEAL IS AGREED (customer accepts a price >= FLOOR_PRICE):
 - Set intent to "LOCK_PRICE" and final_price to the exact agreed number.
-- Celebrate briefly and nudge them to grab it now, with a quirky line about
-  losing the offer if they leave. Do NOT mention carts, checkout, URLs, or
-  payment, the app handles that.
+- Celebrate briefly and nudge them to grab it now. Do NOT mention carts,
+  checkout, URLs, or payment, the app handles that.
+
+HOW TO STATE PRICES (critical for accuracy):
+- Whenever you name a price in your reply, write the literal token {PRICE}
+  INSTEAD of digits. Example: "Ooh, how about {PRICE}?" or "Deal, {PRICE} it is!"
+- Put the actual number in the final_price field. The app fills {PRICE} in for
+  you. NEVER type a rupee number yourself, always use {PRICE}.
+- Use {PRICE} at most once. If you're not naming a price this turn, don't use it.
 
 STYLE & TONE:
-- Be FRIENDLY, warm, bubbly, and happy, like a fun friend helping them snag a
-  deal. Smile through your words.
-- Always sweet and flattering, even when refusing. Never accuse the customer or
-  imply they are difficult, cheap, or annoying. Refuse the PRICE, never the
-  person.
-- LENGTH: reply in ONE short line. Never more than ~20 words. Snappy and human.
-  Do not ramble. Shorter is better.
-- Write like a real person texting a friend. A little emoji is welcome.
-- Do NOT use em-dashes or en-dashes or semicolons anywhere. Use commas, full
-  stops, or separate short sentences. This is important.
+- Friendly, warm, bubbly. Sweet even when refusing. Refuse the PRICE, never the
+  person. Make them feel smart for haggling.
+- Reply in ONE short line, ~20 words max. Snappy and human. A little emoji is ok.
+- Do NOT use em-dashes, en-dashes, or semicolons. Use commas or short sentences.
 
-ALWAYS reply by calling the "respond" tool. Put your spoken line in "reply",
-the current price you're holding in "final_price", and the right "intent".
+ALWAYS reply by calling the "respond" tool.
 `.trim();
 
-/* The tool the model is FORCED to call. Forcing tool_choice guarantees the
-   API returns an object matching this schema, so output is never malformed. */
+/* Forced tool: the API guarantees a schema-valid object. */
 const RESPOND_TOOL = {
   name: "respond",
   description:
-    "Reply to the customer in the haggle chat. Always call this exactly once.",
+    "Reply to the customer. Always call this exactly once. In `reply`, use the token {PRICE} (never digits) wherever you name a price; put the number in `final_price`.",
   input_schema: {
     type: "object",
     properties: {
       reply: {
         type: "string",
         description:
-          "Your short, warm, in-character spoken line to the customer. One line, ~20 words max.",
+          "Your short, warm, in-character line. Use the literal token {PRICE} wherever a price is named. ~20 words max.",
       },
       final_price: {
         type: "number",
         description:
-          "The price you are currently holding/offering. On LOCK_PRICE, the exact agreed number.",
+          "The numeric price you are offering this turn, or the agreed number on a lock. Per single unit.",
       },
       intent: {
         type: "string",
@@ -194,6 +173,70 @@ const MAX_HISTORY_TURNS = 20;
 const MAX_HISTORY_CHARS = 500;
 const MIN_PRICE = 1;
 const MAX_PRICE = 10000000;
+const MAX_QTY = 25; // sanity ceiling on cart quantity
+
+/* -------------------------------------------------------------------
+   PRICE PARSING HELPERS
+------------------------------------------------------------------- */
+// Pull all plausible price numbers out of a string (handles ₹ and commas).
+function pricesIn(text) {
+  if (!text) return [];
+  const matches = String(text).match(/\d[\d,]*(?:\.\d+)?/g) || [];
+  return matches
+    .map((m) => Number(m.replace(/,/g, "")))
+    .filter((n) => Number.isFinite(n) && n >= MIN_PRICE && n <= MAX_PRICE);
+}
+
+// The customer's offer: use the LOWEST plausible number they typed. Lowest is
+// the safe pick because auto-lock only fires when the offer clears the floor,
+// so a stray small number can never cause a wrongful lock (it just won't fire).
+function customerOfferFrom(message) {
+  const nums = pricesIn(message);
+  return nums.length ? Math.min(...nums) : null;
+}
+
+// The lowest price the bot has ALREADY offered, scanned from prior assistant
+// turns in history. Used to enforce "offers only go down or stay flat".
+function lowestPriorBotOffer(history) {
+  if (!Array.isArray(history)) return null;
+  const offers = [];
+  for (const m of history) {
+    if (m && m.role === "assistant" && typeof m.content === "string") {
+      offers.push(...pricesIn(m.content));
+    }
+  }
+  return offers.length ? Math.min(...offers) : null;
+}
+
+// Substitute {PRICE} with the validated number. Backstop: if the model forgot
+// the token but wrote exactly one price-like number, replace that instead.
+function fillPrice(reply, price) {
+  let out = String(reply || "");
+  const token = /\{\s*price\s*\}/gi;
+  const hasNumber = Number.isFinite(price);
+  if (token.test(out)) {
+    out = out.replace(token, hasNumber ? `\u20B9${price}` : "");
+  } else if (hasNumber) {
+    // backstop: only a single, price-like (2+ digit or ₹-prefixed) number
+    const priceLike = /\u20B9\s*\d[\d,]*(?:\.\d+)?|\b\d{2,}(?:,\d{3})*(?:\.\d+)?\b/g;
+    const found = out.match(priceLike) || [];
+    if (found.length === 1) out = out.replace(priceLike, `\u20B9${price}`);
+  }
+  // clean any stray leftover braces so the customer never sees "{PRICE}"
+  out = out
+    .replace(/\{\s*price\s*\}/gi, hasNumber ? `\u20B9${price}` : "")
+    .replace(/[{}]/g, "");
+  return out.trim();
+}
+
+const LOCK_LINES = [
+  (p) => `Deal! \u20B9${p} it is, snag it before I blink! \uD83C\uDF89`,
+  (p) => `Yes! \u20B9${p} and it's yours, grab it quick! \u2728`,
+  (p) => `Sold! \u20B9${p}, lock it in before I change my mind \uD83D\uDE04`,
+];
+function lockLine(p) {
+  return LOCK_LINES[Math.floor(Math.random() * LOCK_LINES.length)](p);
+}
 
 export default async function handler(req, res) {
   const corsHeaders = corsHeadersFor(req);
@@ -216,7 +259,7 @@ export default async function handler(req, res) {
   if (isRateLimited(ip)) {
     res.writeHead(429, corsHeaders);
     return res.end(
-      JSON.stringify({ reply: "Whoa, slow down a sec and try again! 😊" })
+      JSON.stringify({ reply: "Whoa, slow down a sec and try again! \uD83D\uDE0A" })
     );
   }
 
@@ -230,7 +273,7 @@ export default async function handler(req, res) {
     }
   }
 
-  const { message, history, variantId, price, threadId } = body;
+  const { message, history, variantId, price, threadId, quantity } = body;
 
   /* ---------------- INPUT VALIDATION ---------------- */
   const basePrice = Number(price);
@@ -248,8 +291,14 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ reply: "Invalid input" }));
   }
 
+  // Quantity is lenient: clamp into [1, MAX_QTY], default 1 if missing/bad.
+  const qty = Math.min(
+    MAX_QTY,
+    Math.max(1, Math.round(Number(quantity)) || 1)
+  );
+
   if (!process.env.ANTHROPIC_API_KEY) {
-    console.error("❌ ANTHROPIC_API_KEY is not set in Vercel env.");
+    console.error("\u274C ANTHROPIC_API_KEY is not set in Vercel env.");
     res.writeHead(500, corsHeaders);
     return res.end(JSON.stringify({ reply: "Server not configured." }));
   }
@@ -278,9 +327,7 @@ export default async function handler(req, res) {
 
     const messages = [...priorTurns, { role: "user", content: message }];
 
-    /* ---------------- CALL CLAUDE (forced tool call) ----------------
-       tool_choice forces the model to emit a schema-valid "respond" call.
-       This is what makes broken/missing JSON impossible. */
+    /* ---------------- CALL CLAUDE (forced tool call) ---------------- */
     const aiRes = await fetch(ANTHROPIC_URL, {
       method: "POST",
       headers: {
@@ -290,9 +337,8 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 300, // ceiling, not a target: model stops when done, so
-        // this adds safe headroom (no truncation) with zero speed cost.
-        temperature: 0.8, // varied wording; structure is guaranteed by the tool
+        max_tokens: 300, // ceiling, not a target: model stops when done.
+        temperature: 0.8,
         tools: [RESPOND_TOOL],
         tool_choice: { type: "tool", name: "respond" },
         system: [
@@ -305,16 +351,16 @@ export default async function handler(req, res) {
             type: "text",
             text:
               `Context for this negotiation:\n` +
-              `BASE_PRICE = ₹${basePrice}\n` +
-              `FLOOR_PRICE = ₹${floorPrice}  (secret, never reveal)\n\n` +
-              `HARD CONSTRAINT: ₹${floorPrice} is the LOWEST number you may ` +
-              `ever say, offer, counter with, or agree to, but it is a secret ` +
-              `backstop, NOT your target. Do not head toward it. Aim to close ` +
-              `ABOVE it. If the customer offers below ₹${floorPrice}, refuse ` +
-              `cheerfully and counter with a number comfortably above ` +
-              `₹${floorPrice} (never at or below it). The moment the customer ` +
-              `agrees to any number >= ₹${floorPrice}, set intent to ` +
-              `"LOCK_PRICE" and set final_price to that exact agreed number.`,
+              `BASE_PRICE = \u20B9${basePrice}\n` +
+              `FLOOR_PRICE = \u20B9${floorPrice}  (secret, never reveal)\n\n` +
+              `HARD CONSTRAINT: \u20B9${floorPrice} is the LOWEST number you may ` +
+              `ever offer or agree to, but it is a secret backstop, NOT your ` +
+              `target. Aim to close ABOVE it. If the customer offers below ` +
+              `\u20B9${floorPrice}, refuse cheerfully and counter comfortably ` +
+              `above it. The moment the customer agrees to any number >= ` +
+              `\u20B9${floorPrice}, set intent to "LOCK_PRICE" and final_price ` +
+              `to that exact agreed number. Remember: use the {PRICE} token in ` +
+              `your reply, never type the digits yourself.`,
           },
         ],
         messages,
@@ -324,12 +370,11 @@ export default async function handler(req, res) {
     const aiData = await aiRes.json();
 
     if (!aiRes.ok) {
-      console.error("🤖 ANTHROPIC ERROR", aiRes.status, JSON.stringify(aiData));
+      console.error("\uD83E\uDD16 ANTHROPIC ERROR", aiRes.status, JSON.stringify(aiData));
     }
 
-    // Cache + usage visibility in logs (handy while tuning).
     if (aiData?.usage) {
-      console.log("🧮 USAGE", {
+      console.log("\uD83E\uDDEE USAGE", {
         cache_read: aiData.usage.cache_read_input_tokens,
         cache_write: aiData.usage.cache_creation_input_tokens,
         input: aiData.usage.input_tokens,
@@ -338,12 +383,8 @@ export default async function handler(req, res) {
       });
     }
 
-    /* ---------------- READ THE TOOL CALL ----------------
-       With forced tool_choice the response contains a tool_use block whose
-       `input` is ALREADY a parsed object matching our schema. No JSON.parse,
-       no regex, nothing to break. We keep a text fallback only for the rare
-       case of an API error response with no tool block. */
-    let reply = "Hmm, make me an offer and let's see what we can do 😉";
+    /* ---------------- READ THE TOOL CALL ---------------- */
+    let replyRaw = "Hmm, make me an offer and let's see what we can do \uD83D\uDE09";
     let finalPrice = basePrice;
     let intent = "NEGOTIATE";
 
@@ -353,38 +394,70 @@ export default async function handler(req, res) {
 
     let parsed = toolBlock?.input || null;
 
-    // Last-resort fallback: only relevant if the API errored and returned no
-    // tool block (e.g. 4xx/5xx). Normal success always has the tool block.
     if (!parsed) {
       const rawText = Array.isArray(aiData?.content)
-        ? aiData.content
-            .filter((b) => b.type === "text")
-            .map((b) => b.text)
-            .join("")
+        ? aiData.content.filter((b) => b.type === "text").map((b) => b.text).join("")
         : "";
       parsed = extractJson(rawText);
-      if (!parsed) {
-        console.warn("⚠️ No tool_use block and no parseable text. Raw:", rawText);
-      }
+      if (!parsed) console.warn("\u26A0\uFE0F No tool_use block and no parseable text. Raw:", rawText);
     }
 
     if (parsed) {
       if (typeof parsed.reply === "string" && parsed.reply.trim())
-        reply = parsed.reply.trim();
-      if (Number.isFinite(parsed.final_price))
-        finalPrice = Number(parsed.final_price);
+        replyRaw = parsed.reply.trim();
+      if (Number.isFinite(parsed.final_price)) finalPrice = Number(parsed.final_price);
       if (parsed.intent === "LOCK_PRICE" || parsed.intent === "NEGOTIATE")
         intent = parsed.intent;
     }
 
-    // Safety net: scrub any em/en dashes the model still slips in.
-    reply = reply.replace(/\s*[—–]\s*/g, ", ").replace(/[—–]/g, ", ");
+    /* ===================================================================
+       SERVER-SIDE PRICE INTEGRITY  (the source of truth, not the model)
+    =================================================================== */
+    const customerOffer = customerOfferFrom(message);
+    const lowestBotOffer = lowestPriorBotOffer(history);
+    let serverForcedLock = false;
 
-    /* ---------------- SERVER-SIDE SAFETY ---------------- */
+    // Never charge above list.
     finalPrice = Math.min(finalPrice, basePrice);
+
+    // TAKE THE MONEY: if the customer's own offer already clears the floor,
+    // lock at THEIR number (capped by our standing offer and list). Never
+    // counter a paying customer downward.
+    if (customerOffer !== null && customerOffer >= floorPrice && intent !== "LOCK_PRICE") {
+      let lockAt = customerOffer;
+      if (lowestBotOffer !== null) lockAt = Math.min(lockAt, lowestBotOffer);
+      lockAt = Math.min(lockAt, basePrice);
+      finalPrice = lockAt;
+      intent = "LOCK_PRICE";
+      serverForcedLock = true;
+    }
+
+    // For an ongoing NEGOTIATE counter: offers only go DOWN or stay flat
+    // (never above our own last offer), and never below the floor.
+    if (intent === "NEGOTIATE") {
+      if (lowestBotOffer !== null) finalPrice = Math.min(finalPrice, lowestBotOffer);
+      finalPrice = Math.max(finalPrice, floorPrice);
+    }
+
+    // Refuse to honour any lock below the secret floor.
     if (intent === "LOCK_PRICE" && finalPrice < floorPrice) {
       intent = "NEGOTIATE";
+      serverForcedLock = false;
+      finalPrice = Math.max(finalPrice, floorPrice);
+      if (lowestBotOffer !== null) finalPrice = Math.min(finalPrice, lowestBotOffer);
     }
+
+    finalPrice = Math.round(finalPrice);
+
+    /* ---------------- BUILD THE SPOKEN REPLY ----------------
+       If the server forced a lock, the model's text was a counter, so we
+       replace it with a clean celebration at the locked price. Otherwise we
+       fill the {PRICE} token (or the single price-like number) with the
+       validated price, so what the customer reads always matches reality. */
+    let reply = serverForcedLock ? lockLine(finalPrice) : fillPrice(replyRaw, finalPrice);
+
+    // Safety net: scrub any em/en dashes the model still slips in.
+    reply = reply.replace(/\s*[\u2014\u2013]\s*/g, ", ").replace(/[\u2014\u2013]/g, ", ");
 
     /* ---------------- LOCK -> DRAFT ORDER ---------------- */
     let checkoutUrl = null;
@@ -393,12 +466,12 @@ export default async function handler(req, res) {
         checkoutUrl = await createDraftOrder({
           variantId,
           originalPrice: basePrice,
-          agreedPrice: finalPrice,
+          agreedPrice: finalPrice, // per unit
+          quantity: qty,
         });
       } catch (err) {
-        console.error("🛒 DRAFT ORDER FAILED", err.message);
-        reply =
-          "Oof, the till jammed for a sec, tap to try locking that again!";
+        console.error("\uD83D\uDED2 DRAFT ORDER FAILED", err.message);
+        reply = "Oof, the till jammed for a sec, tap to try locking that again!";
       }
     }
 
@@ -406,23 +479,23 @@ export default async function handler(req, res) {
     return res.end(
       JSON.stringify({
         reply,
-        final_price: finalPrice,
+        final_price: finalPrice, // per unit
+        quantity: qty,
+        total_price: finalPrice * qty,
         intent,
         checkout_url: checkoutUrl,
         threadId: threadId || null,
       })
     );
   } catch (err) {
-    console.error("🔥 SERVER ERROR", err);
+    console.error("\uD83D\uDD25 SERVER ERROR", err);
     res.writeHead(500, corsHeaders);
     return res.end(JSON.stringify({ reply: "Server error" }));
   }
 }
 
 /* -------------------------------------------------------------------
-   Fallback JSON extraction. With forced tool calls this should never
-   run on a successful response, but it's kept as a safety net for API
-   error cases that return text instead of a tool block.
+   Fallback JSON extraction (safety net for API error responses).
 ------------------------------------------------------------------- */
 function extractJson(text) {
   if (!text) return null;
@@ -441,25 +514,30 @@ function extractJson(text) {
 }
 
 /* -------------------------------------------------------------------
-   🛒 SHOPIFY DRAFT ORDER  (full-price safe)
+   SHOPIFY DRAFT ORDER  (quantity-aware, full-price safe)
+   agreedPrice is PER UNIT, so the discount is scaled by quantity.
 ------------------------------------------------------------------- */
-async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
-  const discountAmount = Math.max(0, originalPrice - agreedPrice);
+async function createDraftOrder({ variantId, originalPrice, agreedPrice, quantity }) {
+  const qty = Math.max(1, Number(quantity) || 1);
+  const perUnitDiscount = Math.max(0, originalPrice - agreedPrice);
+  const discountAmount = perUnitDiscount * qty; // total across all units
 
   const haggleSession = `${variantId}_${Date.now()}_${Math.random()
     .toString(36)
     .slice(2)}`;
 
   const draftOrder = {
-    line_items: [{ variant_id: Number(variantId), quantity: 1 }],
+    line_items: [{ variant_id: Number(variantId), quantity: qty }],
     note: "AI negotiated price (Haggle)",
     note_attributes: [
       { name: "haggle_session", value: haggleSession },
       { name: "haggle_original_price", value: String(originalPrice) },
       { name: "haggle_final_price", value: String(agreedPrice) },
+      { name: "haggle_quantity", value: String(qty) },
     ],
   };
 
+  // Order-level fixed discount = per-unit saving times quantity.
   if (discountAmount > 0) {
     draftOrder.applied_discount = {
       description: "AI negotiated price",
@@ -482,7 +560,7 @@ async function createDraftOrder({ variantId, originalPrice, agreedPrice }) {
   );
 
   const data = await res.json();
-  console.log("🧾 SHOPIFY STATUS", res.status);
+  console.log("\uD83E\uDDFE SHOPIFY STATUS", res.status);
 
   if (!res.ok || !data?.draft_order?.invoice_url) {
     throw new Error(
